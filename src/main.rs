@@ -4,7 +4,7 @@ use log::info;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-use rosbag_msgs::{BagProcessor, MessageLog, Result, ValueExt};
+use rosbag_msgs::{BagProcessor, MessageLog, MetadataEvent, Result};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -12,13 +12,21 @@ struct Args {
     /// Path to the ROS bag file
     #[clap(short, long, value_parser)]
     bag: PathBuf,
+
+    /// Print metadata (connections and stats)
+    #[clap(long, action)]
+    metadata: bool,
+
+    /// List of message types to register and print (comma-separated)
+    #[clap(short, long, value_delimiter = ',')]
+    messages: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logger with default info level
     env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Debug)
+        .filter_level(log::LevelFilter::Info)
         .parse_default_env() // Allow overriding level with RUST_LOG env var
         .init();
 
@@ -28,44 +36,75 @@ async fn main() -> Result<()> {
     // Create and configure the processor
     let mut processor = BagProcessor::new(args.bag);
 
-    // Create a channel to receive IMU messages
-    let (imu_sender, mut imu_receiver) = mpsc::channel::<MessageLog>(1000);
-
-    // Register for IMU messages
-    processor.register_message("sensor_msgs/Imu", imu_sender)?;
-    info!("Registered handler for sensor_msgs/Imu messages");
-
-    // Spawn a task to handle IMU messages
-    let imu_handler = tokio::spawn(async move {
-        let mut message_count = 0;
-        while let Some(msg) = imu_receiver.recv().await {
-            message_count += 1;
-
-            // Extract some values from the IMU message
-            if let Ok(linear_accel) = msg.data.get_nested_value(&["linear_acceleration"]) {
-                if let (Ok(x), Ok(y), Ok(z)) = (
-                    linear_accel.get::<f64>("x"),
-                    linear_accel.get::<f64>("y"),
-                    linear_accel.get::<f64>("z"),
-                ) {
-                    if message_count % 1000 == 0 {
-                        // Print every 1000th message
-                        info!(
-                            "IMU #{}: Linear acceleration: x={:.3}, y={:.3}, z={:.3}",
-                            message_count, x, y, z
-                        );
+    // Setup metadata channel if requested
+    let metadata_sender = if args.metadata {
+        let (sender, mut receiver) = mpsc::channel::<MetadataEvent>(100);
+        
+        // Spawn task to handle metadata events
+        tokio::spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                match event {
+                    MetadataEvent::ConnectionDiscovered(conn) => {
+                        print!("{}", conn.format_structure());
+                    }
+                    MetadataEvent::ProcessingStarted => {
+                        println!("Processing started...");
+                    }
+                    MetadataEvent::ProcessingCompleted(stats) => {
+                        println!("Processing completed!");
+                        println!("Total messages: {}", stats.total_messages);
+                        println!("Total processed: {}", stats.total_processed);
+                        println!("Processing time: {}ms", stats.processing_duration_ms);
+                        println!("Message counts by type:");
+                        for (msg_type, count) in stats.message_counts {
+                            println!("  {}: {}", msg_type, count);
+                        }
                     }
                 }
             }
-        }
-        info!("Processed {} IMU messages total", message_count);
-    });
+        });
+        
+        Some(sender)
+    } else {
+        None
+    };
+
+    // Setup message handlers
+    let mut handlers = Vec::new();
+    
+    for msg_type in &args.messages {
+        let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
+        processor.register_message(msg_type, sender)?;
+        info!("Registered handler for {} messages", msg_type);
+        
+        let msg_type_clone = msg_type.clone();
+        let handler = tokio::spawn(async move {
+            let mut message_count = 0;
+            while let Some(msg) = receiver.recv().await {
+                message_count += 1;
+                
+                // Print message info
+                println!(
+                    "{} #{} [{}]: {}", 
+                    msg_type_clone, 
+                    message_count, 
+                    msg.topic,
+                    serde_json::to_string(&msg.data).unwrap_or_else(|_| "<parse error>".to_string())
+                );
+            }
+            info!("Processed {} {} messages total", message_count, msg_type_clone);
+        });
+        
+        handlers.push(handler);
+    }
 
     // Process the bag file
-    let process_result = processor.process_bag().await;
+    let process_result = processor.process_bag(metadata_sender).await;
 
-    // Wait for the IMU handler to finish
-    let _ = imu_handler.await;
+    // Wait for all handlers to finish
+    for handler in handlers {
+        let _ = handler.await;
+    }
 
     process_result
 }

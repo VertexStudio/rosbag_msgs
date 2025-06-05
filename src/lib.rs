@@ -1,5 +1,5 @@
 use byteorder::{LittleEndian, ReadBytesExt};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, trace, warn};
 use ros_message::{DataType, Duration, FieldCase, Msg, Time};
 use rosbag::{ChunkRecord, IndexRecord, MessageRecord, RosBag};
 use std::collections::HashMap;
@@ -56,6 +56,63 @@ pub struct MessageLog {
     pub data: Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConnectionInfo {
+    pub id: u32,
+    pub topic: String,
+    pub message_type: MessagePath,
+    pub message_definition: String,
+    pub dependencies: Vec<Msg>,
+}
+
+impl ConnectionInfo {
+    pub fn format_structure(&self) -> String {
+        let mut output = String::new();
+        output.push_str(&format!("topic: {}\n", self.topic));
+        
+        for (i, msg) in self.dependencies.iter().enumerate() {
+            if i == 0 {
+                output.push_str(&format!("type: {}\n", msg.path()));
+                for field in msg.fields() {
+                    output.push_str(&format!(
+                        "        |      {}: {} {:?}\n",
+                        field.name(),
+                        field.datatype(),
+                        field.case()
+                    ));
+                }
+            } else {
+                output.push_str(&format!("        |- {}\n", msg.path()));
+                for field in msg.fields() {
+                    output.push_str(&format!(
+                        "        |      {}: {} {:?}\n",
+                        field.name(),
+                        field.datatype(),
+                        field.case()
+                    ));
+                }
+            }
+        }
+        output.push_str(&format!("{}\n", ".".repeat(100)));
+        output
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessingStats {
+    pub total_messages: usize,
+    pub total_processed: usize,
+    pub message_counts: HashMap<MessagePath, usize>,
+    pub processing_duration_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum MetadataEvent {
+    ConnectionDiscovered(ConnectionInfo),
+    ProcessingStarted,
+    ProcessingCompleted(ProcessingStats),
+}
+
 impl BagProcessor {
     // Constructor for BagProcessor
     pub fn new(bag_path: PathBuf) -> Self {
@@ -78,13 +135,22 @@ impl BagProcessor {
         Ok(())
     }
 
-    pub async fn process_bag(&mut self) -> Result<()> {
-        info!("Starting bag processing for: {}", self.bag_path.display());
+    pub async fn process_bag(
+        &mut self,
+        metadata_sender: Option<mpsc::Sender<MetadataEvent>>,
+    ) -> Result<()> {
+        let start_time = std::time::Instant::now();
+        debug!("Starting bag processing for: {}", self.bag_path.display());
+
+        // Send processing started event
+        if let Some(ref sender) = metadata_sender {
+            let _ = sender.send(MetadataEvent::ProcessingStarted).await;
+        }
 
         let bag = Self::open_bag(&self.bag_path)?;
 
         // --- Pass 1: Collect Connection Info and Parse Definitions ---
-        info!(
+        debug!(
             "Scanning connections and parsing message definitions for: {}",
             self.bag_path.display()
         );
@@ -114,10 +180,22 @@ impl BagProcessor {
                                 &message_path,
                                 &conn.message_definition,
                             )?;
-                            self.definitions.insert(message_path, dependencies);
+                            self.definitions.insert(message_path.clone(), dependencies.clone());
+
+                            // Send connection discovered event
+                            if let Some(ref sender) = metadata_sender {
+                                let connection_info = ConnectionInfo {
+                                    id: conn.id,
+                                    topic: conn.topic.to_string(),
+                                    message_type: message_path.clone(),
+                                    message_definition: conn.message_definition.to_string(),
+                                    dependencies,
+                                };
+                                let _ = sender.send(MetadataEvent::ConnectionDiscovered(connection_info)).await;
+                            }
                         }
                         Err(e) => {
-                            error!(
+                            warn!(
                                 "Invalid message type '{}' for connection id {}: {}",
                                 conn.tp, conn.id, e
                             );
@@ -133,14 +211,33 @@ impl BagProcessor {
                 }
             }
         }
-        info!(
+        debug!(
             "Finished scanning connections. Found {} unique message types in: {}",
             self.definitions.len(),
             self.bag_path.display()
         );
 
+        // Early exit if no message handlers are registered
+        if self.registry.is_empty() {
+            debug!("No message handlers registered: skipping message processing");
+            
+            // Send processing completed event with zero stats
+            if let Some(ref sender) = metadata_sender {
+                let processing_duration = start_time.elapsed();
+                let stats = ProcessingStats {
+                    total_messages: 0,
+                    total_processed: 0,
+                    message_counts: HashMap::new(),
+                    processing_duration_ms: processing_duration.as_millis() as u64,
+                };
+                let _ = sender.send(MetadataEvent::ProcessingCompleted(stats)).await;
+            }
+            
+            return Ok(());
+        }
+
         // --- Pass 2: Process Messages ---
-        info!("Processing message data for: {}", self.bag_path.display());
+        debug!("Processing message data for: {}", self.bag_path.display());
         let mut total_messages = 0;
         let mut total_messages_processed = 0;
 
@@ -188,7 +285,7 @@ impl BagProcessor {
                                 *self.message_counts.entry(msg_path.clone()).or_insert(0) += 1;
 
                                 if let Some(sender) = self.registry.get(&msg_path) {
-                                    debug!("--> {}", msg_path);
+                                    trace!("--> {}", msg_path);
                                     if let Err(e) = sender
                                         .send(MessageLog {
                                             time: message.time,
@@ -211,12 +308,12 @@ impl BagProcessor {
             }
         }
 
-        info!(
+        debug!(
             "Total messages in {}: {}",
             self.bag_path.display(),
             total_messages
         );
-        info!(
+        debug!(
             "Total messages processed in {}: {}",
             self.bag_path.display(),
             total_messages_processed
@@ -226,6 +323,18 @@ impl BagProcessor {
         debug!("Message counts per type:");
         for (msg_path, count) in self.message_counts.iter() {
             debug!("  {}: {}", msg_path, count);
+        }
+
+        // Send processing completed event with stats
+        if let Some(ref sender) = metadata_sender {
+            let processing_duration = start_time.elapsed();
+            let stats = ProcessingStats {
+                total_messages,
+                total_processed: total_messages_processed,
+                message_counts: self.message_counts.clone(),
+                processing_duration_ms: processing_duration.as_millis() as u64,
+            };
+            let _ = sender.send(MetadataEvent::ProcessingCompleted(stats)).await;
         }
 
         Ok(())
@@ -262,14 +371,13 @@ impl BagProcessor {
             }
         }
 
-        // Print ascii art tree of dependencies
-
-        println!("topic: {}", topic);
+        // Trace ascii art tree of dependencies (per-message verbosity)
+        trace!("topic: {}", topic);
         for (i, msg) in messages.iter().enumerate() {
             if i == 0 {
-                println!("type: {}", msg.path());
+                trace!("type: {}", msg.path());
                 for field in msg.fields() {
-                    println!(
+                    trace!(
                         "        |      {}: {} {:?}",
                         field.name(),
                         field.datatype(),
@@ -277,9 +385,9 @@ impl BagProcessor {
                     );
                 }
             } else {
-                println!("        |- {}", msg.path());
+                trace!("        |- {}", msg.path());
                 for field in msg.fields() {
-                    println!(
+                    trace!(
                         "        |      {}: {} {:?}",
                         field.name(),
                         field.datatype(),
@@ -288,7 +396,7 @@ impl BagProcessor {
                 }
             }
         }
-        println!("{}", ".".repeat(100));
+        trace!("{}", ".".repeat(100));
 
         Ok(messages)
     }
@@ -360,7 +468,7 @@ impl BagProcessor {
                         match self.parse_single_value(cursor, field_datatype, msg_defs) {
                             Ok(value) => array_values.push(value),
                             Err(e) => {
-                                warn!(
+                                error!(
                                     "Failed to parse element {} of vector field '{}': {}. Stopping array parse.",
                                     i, field_name, e
                                 );
@@ -378,7 +486,7 @@ impl BagProcessor {
                         match self.parse_single_value(cursor, field_datatype, msg_defs) {
                             Ok(value) => array_values.push(value),
                             Err(e) => {
-                                warn!(
+                                error!(
                                     "Failed to parse element {} of fixed array field '{}' (len {}): {}. Stopping array parse.",
                                     i, field_name, fixed_len, e
                                 );
@@ -479,7 +587,7 @@ impl BagProcessor {
             )));
         }
 
-        info!("Opening bag file: {}", path.display());
+        debug!("Opening bag file: {}", path.display());
 
         match RosBag::new(path) {
             Ok(bag) => Ok(bag),
