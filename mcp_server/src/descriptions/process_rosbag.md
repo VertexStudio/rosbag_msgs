@@ -100,3 +100,21 @@ Returns: Next 10 images (messages 11-20)
 
 ## Output Format
 All data returned as JSON with message timestamps, topic names, and parsed message content. Metadata includes ASCII tree structures showing message field hierarchies and data types.
+
+### Pagination Information
+When using offset/limit parameters, responses include pagination metadata:
+- **Offset**: Starting position used for this request
+- **Limit**: Maximum messages requested
+- **Returned**: Actual number of messages returned
+- **Total**: Total number of messages available that match the filters
+
+Example pagination response:
+```
+Pagination:
+  Offset: 100 | Limit: 10 | Returned: 10 | Total: 5679
+```
+
+With this information you can calculate:
+- Has more data: `offset + returned < total`
+- Next offset: `offset + returned`
+- Progress: `(offset + returned) / total`

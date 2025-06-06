@@ -207,8 +207,6 @@ impl Toolbox {
 
         let mut output_lines = Vec::new();
 
-        // No need for effective max calculation since offset/limit is handled in the library
-
         // Setup metadata channel if requested
         let (metadata_sender, metadata_handler) = if metadata.unwrap_or(false) {
             let (sender, mut receiver) = mpsc::channel::<MetadataEvent>(100);
@@ -235,7 +233,7 @@ impl Toolbox {
                     }
                 }
 
-                // Combine stats first, then connections
+                // Include metadata output
                 let mut lines = output_lines_ref.lock().await;
                 let stats_empty = stats_lines.is_empty();
                 let connections_empty = connection_lines.is_empty();
@@ -328,6 +326,11 @@ impl Toolbox {
         let process_result = processor
             .process_bag(metadata_sender, offset, limit, None, None)
             .await;
+            
+        let pagination_info = match &process_result {
+            Ok(pagination) => pagination.clone(),
+            Err(_) => None,
+        };
 
         // Wait for all handlers to finish and collect output
         for (handler, output_lines_ref) in handlers {
@@ -341,15 +344,22 @@ impl Toolbox {
             let _ = metadata_handler.await;
             let metadata_lines = metadata_output_ref.lock().await;
             output_lines.extend(metadata_lines.clone());
-        }
+        };
 
         match process_result {
             Ok(_) => {
-                let result_text = if output_lines.is_empty() {
+                let mut result_text = if output_lines.is_empty() {
                     "Bag file processed successfully (no output generated)".to_string()
                 } else {
                     output_lines.join("\n")
                 };
+
+                // Add pagination information if available
+                if let Some(pagination) = pagination_info {
+                    result_text.push_str("\n\n--- Pagination Info ---\n");
+                    result_text.push_str(&format!("Offset: {} | Limit: {} | Returned: {} | Total: {}\n", 
+                        pagination.offset, pagination.limit, pagination.returned_count, pagination.total));
+                }
 
                 // Use the large output handler to potentially store to file
                 self.handle_large_output(result_text, "rosbag_process")
@@ -399,6 +409,11 @@ impl Toolbox {
         // Default to getting just 1 image at the specified offset
         let limit = Some(1);
         let process_result = processor.process_bag(None, offset, limit, None, None).await;
+        
+        let pagination_info = match &process_result {
+            Ok(pagination) => pagination.clone(),
+            Err(_) => None,
+        };
 
         // Wait for handler to finish
         let _ = handler.await;
@@ -428,11 +443,21 @@ impl Toolbox {
                                 &png_data,
                             );
 
-                            // Return as image content
-                            Ok(CallToolResult::success(vec![Content::image(
-                                base64_data,
-                                "image/png",
-                            )]))
+                            // Prepare content with image and pagination info
+                            let mut contents = vec![Content::image(base64_data, "image/png")];
+                            
+                            // Add pagination information as text content
+                            let pagination_text = if let Some(ref pagination) = pagination_info {
+                                format!(
+                                    "Pagination: Offset: {} | Limit: {} | Returned: {} | Total: {}",
+                                    pagination.offset, pagination.limit, pagination.returned_count, pagination.total
+                                )
+                            } else {
+                                "No pagination information available".to_string()
+                            };
+                            contents.push(Content::text(pagination_text));
+
+                            Ok(CallToolResult::success(contents))
                         }
                         Err(e) => Err(McpError::internal_error(
                             "Failed to extract image from message",

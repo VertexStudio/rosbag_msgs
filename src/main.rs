@@ -34,15 +34,26 @@ async fn fetch_image_command(
         }
     });
 
+    // Setup metadata channel (not needed for pagination anymore, but kept for consistency)
+    let (metadata_sender, mut metadata_receiver) = mpsc::channel::<MetadataEvent>(100);
+    
+    // Spawn task to handle metadata events (just consume them)
+    let metadata_handler = tokio::spawn(async move {
+        while let Some(_) = metadata_receiver.recv().await {
+            // Just consume events, we don't need them for pagination
+        }
+    });
+
     // Process the bag file using offset/limit for image fetching
     // Default to getting just 1 image at the specified offset
     let limit = Some(1);
-    processor
-        .process_bag(None, offset, limit, None, None)
+    let pagination_info = processor
+        .process_bag(Some(metadata_sender), offset, limit, None, None)
         .await?;
 
-    // Wait for handler to finish
+    // Wait for handlers to finish
     let _ = handler.await;
+    let _ = metadata_handler.await;
 
     let images = images_collected.lock().await;
 
@@ -77,6 +88,16 @@ async fn fetch_image_command(
 
                 std::fs::write(&output_path, &png_data)?;
                 println!("Image saved to: {}", output_path.display());
+                
+                // Show pagination information
+                if let Some(ref pagination) = pagination_info {
+                    println!("\nPagination:");
+                    println!("  Offset: {}", pagination.offset);
+                    println!("  Limit: {}", pagination.limit);
+                    println!("  Returned: {}", pagination.returned_count);
+                    println!("  Total: {}", pagination.total);
+                }
+                
                 Ok(())
             }
             Err(e) => Err(rosbag_msgs::RosbagError::MessageParsingError(format!(
@@ -190,8 +211,9 @@ async fn process_bag_command(
     // Create and configure the processor
     let mut processor = BagProcessor::new(bag);
 
-    // Setup metadata channel if requested
-    let metadata_sender = if metadata {
+    // Setup metadata channel if requested OR if we need pagination info
+    let needs_pagination = offset.is_some() || limit.is_some();
+    let metadata_sender = if metadata || needs_pagination {
         let (sender, mut receiver) = mpsc::channel::<MetadataEvent>(100);
 
         // Spawn task to handle metadata events
@@ -199,13 +221,19 @@ async fn process_bag_command(
             while let Some(event) = receiver.recv().await {
                 match event {
                     MetadataEvent::ConnectionDiscovered(conn) => {
-                        print!("{}", conn.format_structure());
+                        if metadata {
+                            print!("{}", conn.format_structure());
+                        }
                     }
                     MetadataEvent::ProcessingStarted => {
-                        println!("Processing started...");
+                        if metadata {
+                            println!("Processing started...");
+                        }
                     }
                     MetadataEvent::ProcessingCompleted(stats) => {
-                        print!("{}", stats.format_summary());
+                        if metadata {
+                            print!("{}", stats.format_summary());
+                        }
                     }
                 }
             }
@@ -284,13 +312,29 @@ async fn process_bag_command(
     let process_result = processor
         .process_bag(metadata_sender, offset, limit, None, None)
         .await;
+    
+    let pagination_info = match &process_result {
+        Ok(pagination) => pagination.clone(),
+        Err(_) => None,
+    };
 
     // Wait for all handlers to finish
     for handler in handlers {
         let _ = handler.await;
     }
 
-    process_result
+    // Show pagination info if available and not showing metadata
+    if !metadata && needs_pagination {
+        if let Some(pagination) = &pagination_info {
+            println!("\nPagination:");
+            println!("  Offset: {}", pagination.offset);
+            println!("  Limit: {}", pagination.limit);
+            println!("  Returned: {}", pagination.returned_count);
+            println!("  Total: {}", pagination.total);
+        }
+    }
+
+    process_result.map(|_| ())
 }
 
 #[tokio::main]

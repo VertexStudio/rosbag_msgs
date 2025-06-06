@@ -170,6 +170,15 @@ pub struct ProcessingStats {
     pub processing_duration_ms: Option<u64>,
     pub bag_start_time: Option<u64>,
     pub bag_end_time: Option<u64>,
+    pub pagination: Option<PaginationInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PaginationInfo {
+    pub offset: usize,
+    pub limit: usize,
+    pub returned_count: usize,
+    pub total: usize,
 }
 
 impl ProcessingStats {
@@ -212,6 +221,15 @@ impl ProcessingStats {
         output.push_str("Message counts by topic:\n");
         for (topic, count) in &self.topic_counts {
             output.push_str(&format!("  {}: {}\n", topic, count));
+        }
+
+        // Add pagination information if available
+        if let Some(pagination) = &self.pagination {
+            output.push_str("\nPagination:\n");
+            output.push_str(&format!("  Offset: {}\n", pagination.offset));
+            output.push_str(&format!("  Limit: {}\n", pagination.limit));
+            output.push_str(&format!("  Returned: {}\n", pagination.returned_count));
+            output.push_str(&format!("  Total: {}\n", pagination.total));
         }
 
         output
@@ -261,7 +279,7 @@ impl BagProcessor {
         limit: Option<usize>,
         start_time_offset: Option<f64>,
         duration: Option<f64>,
-    ) -> Result<()> {
+    ) -> Result<Option<PaginationInfo>> {
         debug!("Starting bag processing for: {}", self.bag_path.display());
 
         // Send processing started event
@@ -488,35 +506,26 @@ impl BagProcessor {
                                         data: msg,
                                     };
 
-                                    // Apply global offset/limit pagination
-                                    if global_message_count < offset_val {
-                                        global_message_count += 1;
-                                        continue; // Skip this message due to offset
-                                    }
+                                    // Check if this message should be sent to handlers (within offset/limit window)
+                                    let should_send = global_message_count >= offset_val && global_message_count < offset_val + limit_val;
 
-                                    if global_message_count >= offset_val + limit_val {
-                                        trace!(
-                                            "Reached limit of {} messages after offset {}",
-                                            limit_val, offset_val
-                                        );
-                                        break 'chunk_loop; // Stop processing - we've hit the limit
-                                    }
-
-                                    // Send to message type handler if registered
-                                    if let Some(sender) = message_sender {
-                                        trace!("--> {} (by type)", msg_path);
-                                        if let Err(e) = sender.send(message_log.clone()).await {
-                                            warn!("Error sending message to type handler: {}", e);
-                                            break 'chunk_loop;
+                                    if should_send {
+                                        // Send to message type handler if registered
+                                        if let Some(sender) = message_sender {
+                                            trace!("--> {} (by type)", msg_path);
+                                            if let Err(e) = sender.send(message_log.clone()).await {
+                                                warn!("Error sending message to type handler: {}", e);
+                                                break 'chunk_loop;
+                                            }
                                         }
-                                    }
 
-                                    // Send to topic handler if registered
-                                    if let Some(sender) = topic_sender {
-                                        trace!("--> {} (by topic)", connection.topic);
-                                        if let Err(e) = sender.send(message_log).await {
-                                            warn!("Error sending message to topic handler: {}", e);
-                                            break 'chunk_loop;
+                                        // Send to topic handler if registered
+                                        if let Some(sender) = topic_sender {
+                                            trace!("--> {} (by topic)", connection.topic);
+                                            if let Err(e) = sender.send(message_log).await {
+                                                warn!("Error sending message to topic handler: {}", e);
+                                                break 'chunk_loop;
+                                            }
                                         }
                                     }
 
@@ -556,10 +565,30 @@ impl BagProcessor {
             debug!("  {}: {}", topic, count);
         }
 
-        // Send processing completed event with stats
+        // Calculate pagination info independently if we have handlers (not metadata-only)
+        let pagination = if !skip_parsing && (offset.is_some() || limit.is_some()) {
+            let total = global_message_count;
+            let returned_count = if total <= offset_val {
+                0
+            } else {
+                (total - offset_val).min(limit_val)
+            };
+            
+            Some(PaginationInfo {
+                offset: offset_val,
+                limit: limit_val,
+                returned_count,
+                total,
+            })
+        } else {
+            None
+        };
+
+        // Send processing completed event with stats (without pagination in metadata)
         if let Some(ref sender) = metadata_sender {
             let processing_duration_ms =
                 processing_start_time.map(|start| start.elapsed().as_millis() as u64);
+            
             let stats = ProcessingStats {
                 total_messages,
                 total_processed: if skip_parsing {
@@ -572,6 +601,7 @@ impl BagProcessor {
                 processing_duration_ms,
                 bag_start_time,
                 bag_end_time,
+                pagination: None, // Remove pagination from metadata
             };
             let _ = sender.send(MetadataEvent::ProcessingCompleted(stats)).await;
         }
@@ -580,7 +610,7 @@ impl BagProcessor {
         self.message_registry.clear();
         self.topic_registry.clear();
 
-        Ok(())
+        Ok(pagination)
     }
 
     fn get_dependencies(

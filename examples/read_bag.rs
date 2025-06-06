@@ -55,15 +55,20 @@ async fn main() -> Result<()> {
         println!("📈 Received {} IMU messages (limited for demo)", count);
     });
 
-    // Process the bag with metadata channel and message limit for demo
+    // Process the bag with metadata channel and offset/limit for demo
     let process_result = processor
-        .process_bag(Some(metadata_sender), Some(10), None, None)
+        .process_bag(Some(metadata_sender), Some(0), Some(10), None, None)
         .await;
+        
+    if let Ok(Some(pagination)) = &process_result {
+        println!("Example pagination: offset={}, limit={}, returned={}, total={}", 
+                 pagination.offset, pagination.limit, pagination.returned_count, pagination.total);
+    }
 
     // Channels should be closed automatically when process_bag completes
     // Wait for handlers to complete
     let _ = metadata_handler.await;
     let _ = imu_handler.await;
 
-    process_result
+    process_result.map(|_| ())
 }
