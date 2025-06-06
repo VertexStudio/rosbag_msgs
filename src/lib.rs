@@ -107,6 +107,8 @@ pub struct ProcessingStats {
     pub message_counts: HashMap<MessagePath, usize>,
     pub topic_counts: HashMap<String, usize>,
     pub processing_duration_ms: Option<u64>,
+    pub bag_start_time: Option<u64>,
+    pub bag_end_time: Option<u64>,
 }
 
 impl ProcessingStats {
@@ -122,6 +124,23 @@ impl ProcessingStats {
 
         if let Some(duration_ms) = self.processing_duration_ms {
             output.push_str(&format!("Processing time: {}ms\n", duration_ms));
+        }
+
+        if let (Some(start), Some(end)) = (self.bag_start_time, self.bag_end_time) {
+            let duration_secs = (end - start) as f64 / 1_000_000_000.0;
+            output.push_str(&format!("Bag duration: {:.3}s\n", duration_secs));
+
+            // Convert nanosecond timestamps to seconds.nanoseconds format
+            let start_sec = start / 1_000_000_000;
+            let start_nsec = start % 1_000_000_000;
+            let end_sec = end / 1_000_000_000;
+            let end_nsec = end % 1_000_000_000;
+
+            output.push_str(&format!(
+                "Bag start time: {}.{:09}\n",
+                start_sec, start_nsec
+            ));
+            output.push_str(&format!("Bag end time: {}.{:09}\n", end_sec, end_nsec));
         }
 
         output.push_str("Message counts by type:\n");
@@ -280,6 +299,10 @@ impl BagProcessor {
         let mut handler_message_counts: HashMap<MessagePath, usize> = HashMap::new();
         let mut topic_handler_message_counts: HashMap<String, usize> = HashMap::new();
 
+        // Track bag start and end times from actual message timestamps
+        let mut bag_start_time: Option<u64> = None;
+        let mut bag_end_time: Option<u64> = None;
+
         // Iterate through chunks
         'chunk_loop: for chunk_record_result in bag.chunk_records() {
             let chunk_record = match chunk_record_result {
@@ -309,6 +332,15 @@ impl BagProcessor {
                             })?;
                             let msg_path = connection.message_path.clone();
                             trace!("Message path: {} {}", message.time, msg_path);
+
+                            // Track bag start and end times from message timestamps
+                            bag_start_time = Some(
+                                bag_start_time
+                                    .map_or(message.time, |start| start.min(message.time)),
+                            );
+                            bag_end_time = Some(
+                                bag_end_time.map_or(message.time, |end| end.max(message.time)),
+                            );
 
                             // Update message count for this path (always do this for stats)
                             *self.message_counts.entry(msg_path.clone()).or_insert(0) += 1;
@@ -442,6 +474,8 @@ impl BagProcessor {
                 message_counts: self.message_counts.clone(),
                 topic_counts: self.topic_counts.clone(),
                 processing_duration_ms,
+                bag_start_time,
+                bag_end_time,
             };
             let _ = sender.send(MetadataEvent::ProcessingCompleted(stats)).await;
         }
