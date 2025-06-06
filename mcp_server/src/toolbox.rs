@@ -101,7 +101,8 @@ impl Toolbox {
 
         // Spawn task to collect metadata
         let metadata_task = tokio::spawn(async move {
-            let mut metadata_lines = Vec::new();
+            let mut connection_lines = Vec::new();
+            let mut stats_lines = Vec::new();
             let mut discovered_topics = HashMap::new();
             let mut discovered_types = HashSet::new();
 
@@ -110,16 +111,27 @@ impl Toolbox {
                     MetadataEvent::ConnectionDiscovered(conn) => {
                         discovered_topics.insert(conn.topic.clone(), conn.message_type.to_string());
                         discovered_types.insert(conn.message_type.to_string());
-                        metadata_lines.push(conn.format_structure());
+                        connection_lines.push(conn.format_structure());
                     }
                     MetadataEvent::ProcessingStarted => {
-                        metadata_lines.push("Processing started...".to_string());
+                        // Don't include processing started message
                     }
                     MetadataEvent::ProcessingCompleted(stats) => {
-                        metadata_lines.push(stats.format_summary());
+                        stats_lines.push(stats.format_summary());
                     }
                 }
             }
+
+            // Combine stats first, then connections
+            let mut metadata_lines = Vec::new();
+            let stats_empty = stats_lines.is_empty();
+            let connections_empty = connection_lines.is_empty();
+
+            metadata_lines.extend(stats_lines);
+            if !stats_empty && !connections_empty {
+                metadata_lines.push("".to_string()); // Empty line separator
+            }
+            metadata_lines.extend(connection_lines);
 
             (
                 discovered_topics,
@@ -182,20 +194,33 @@ impl Toolbox {
             let output_lines_ref = output_lines_clone.clone();
 
             let handler = tokio::spawn(async move {
+                let mut connection_lines = Vec::new();
+                let mut stats_lines = Vec::new();
+
                 while let Some(event) = receiver.recv().await {
-                    let mut lines = output_lines_ref.lock().await;
                     match event {
                         MetadataEvent::ConnectionDiscovered(conn) => {
-                            lines.push(conn.format_structure());
+                            connection_lines.push(conn.format_structure());
                         }
                         MetadataEvent::ProcessingStarted => {
-                            lines.push("Processing started...".to_string());
+                            // Don't include processing started message
                         }
                         MetadataEvent::ProcessingCompleted(stats) => {
-                            lines.push(stats.format_summary());
+                            stats_lines.push(stats.format_summary());
                         }
                     }
                 }
+
+                // Combine stats first, then connections
+                let mut lines = output_lines_ref.lock().await;
+                let stats_empty = stats_lines.is_empty();
+                let connections_empty = connection_lines.is_empty();
+
+                lines.extend(stats_lines);
+                if !stats_empty && !connections_empty {
+                    lines.push("".to_string()); // Empty line separator
+                }
+                lines.extend(connection_lines);
             });
 
             (Some(sender), Some((handler, output_lines_clone)))
