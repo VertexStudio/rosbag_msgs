@@ -1,0 +1,36 @@
+[package]
+name = "rosbag_mcp_server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+clap = { version = "4.5", features = ["derive"] }
+axum = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "std",
+    "fmt",
+] }
+tracing-appender = "0.2"
+
+# MCP SDK
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "915bc3fb37fe259fba1a853a9dd03566593f3310", features = [
+    "client",
+    "schemars",
+    "transport-io",
+    "transport-child-process",
+    "transport-sse-client",
+    "reqwest",
+] }
