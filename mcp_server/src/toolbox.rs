@@ -55,6 +55,33 @@ pub struct ProcessRosbagRequest {
     pub duration: Option<f64>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FetchImageRequest {
+    /// Absolute or relative path to the ROS bag file (.bag extension)
+    #[schemars(
+        description = "File path to the ROS bag file containing image data (e.g., 'data/race_1.bag', '/path/to/recording.bag')"
+    )]
+    pub bag: String,
+
+    /// ROS topic name containing image messages
+    #[schemars(
+        description = "Topic name for image messages (e.g., '/camera/image_raw', '/camera/fisheye2/image_raw'). Must contain sensor_msgs/Image messages."
+    )]
+    pub topic: String,
+
+    /// Index of image to extract (0-based)
+    #[schemars(
+        description = "Index of the image to extract from the topic (0 = first image, 1 = second, etc.). Defaults to 0 if not specified."
+    )]
+    pub index: Option<usize>,
+
+    /// Timestamp to find closest image
+    #[schemars(
+        description = "Extract image closest to this timestamp in seconds from bag start. Overrides index if specified."
+    )]
+    pub timestamp: Option<f64>,
+}
+
 #[derive(Debug)]
 struct BagMetadata {
     topics: HashMap<String, String>, // topic -> message_type
@@ -330,6 +357,183 @@ impl Toolbox {
             }
             Err(_e) => Err(McpError::internal_error("Failed to process bag file", None)),
         }
+    }
+
+    #[tool(description = include_str!("descriptions/fetch_image.md"))]
+    async fn fetch_image(
+        &self,
+        #[tool(aggr)] FetchImageRequest {
+            bag,
+            topic,
+            index,
+            timestamp,
+        }: FetchImageRequest,
+    ) -> Result<CallToolResult, McpError> {
+        use rosbag_msgs::{BagProcessor, MessageLog, ValueExt};
+        use tokio::sync::mpsc;
+
+        let bag_path = PathBuf::from(bag);
+        let mut processor = BagProcessor::new(bag_path);
+
+        // Register for the specific image topic
+        let (sender, mut receiver) = mpsc::channel::<MessageLog>(100);
+        if let Err(_e) = processor.register_topic(&topic, sender) {
+            return Err(McpError::invalid_params(
+                "Failed to register topic handler",
+                Some(serde_json::json!({"topic": topic})),
+            ));
+        }
+
+        // Collect images
+        let images_collected = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let images_ref = images_collected.clone();
+
+        let handler = tokio::spawn(async move {
+            while let Some(msg) = receiver.recv().await {
+                let mut images = images_ref.lock().await;
+                images.push(msg);
+            }
+        });
+
+        // Process the bag file
+        let process_result = processor.process_bag(None, None, None, None).await;
+
+        // Wait for handler to finish
+        let _ = handler.await;
+
+        match process_result {
+            Ok(_) => {
+                let images = images_collected.lock().await;
+                
+                if images.is_empty() {
+                    return Err(McpError::invalid_params(
+                        "No images found in the specified topic",
+                        Some(serde_json::json!({"topic": topic})),
+                    ));
+                }
+
+                // Select image by index or timestamp
+                let selected_image = if let Some(target_timestamp) = timestamp {
+                    // Find image closest to timestamp
+                    images
+                        .iter()
+                        .min_by_key(|img| {
+                            let img_time = img.time as f64 / 1_000_000_000.0;
+                            ((img_time - target_timestamp).abs() * 1000.0) as u64
+                        })
+                        .cloned()
+                } else {
+                    // Use index (default to 0)
+                    let idx = index.unwrap_or(0);
+                    images.get(idx).cloned()
+                };
+
+                if let Some(image_msg) = selected_image {
+                    // Extract image data using the same logic as the ForgeRerun plugin
+                    let data = &image_msg.data;
+                    
+                    // Extract image properties
+                    let pixels = data.get_u8_array("data").map_err(|_| {
+                        McpError::internal_error("Failed to extract image data", None)
+                    })?;
+                    
+                    let width = data.get::<u32>("width").map_err(|_| {
+                        McpError::internal_error("Failed to extract image width", None)
+                    })? as usize;
+                    
+                    let height = data.get::<u32>("height").map_err(|_| {
+                        McpError::internal_error("Failed to extract image height", None)
+                    })? as usize;
+                    
+                    let encoding = data.get::<String>("encoding").map_err(|_| {
+                        McpError::internal_error("Failed to extract image encoding", None)
+                    })?;
+
+                    // Convert image to PNG format
+                    let png_data = match encoding.as_str() {
+                        "mono8" => {
+                            self.create_png_from_mono8(&pixels, width, height)?
+                        }
+                        "rgb8" => {
+                            self.create_png_from_rgb8(&pixels, width, height)?
+                        }
+                        "bgr8" => {
+                            // Convert BGR to RGB first
+                            let mut rgb_data = vec![0u8; pixels.len()];
+                            for i in 0..(height * width) {
+                                let base = i * 3;
+                                if base + 2 < pixels.len() {
+                                    rgb_data[base] = pixels[base + 2];     // R <- B
+                                    rgb_data[base + 1] = pixels[base + 1]; // G <- G
+                                    rgb_data[base + 2] = pixels[base];     // B <- R
+                                }
+                            }
+                            self.create_png_from_rgb8(&rgb_data, width, height)?
+                        }
+                        _ => {
+                            return Err(McpError::invalid_params(
+                                "Unsupported image encoding",
+                                Some(serde_json::json!({"encoding": encoding})),
+                            ));
+                        }
+                    };
+
+                    // Encode as base64
+                    let base64_data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png_data);
+
+                    // Return as image content
+                    Ok(CallToolResult::success(vec![Content::image(
+                        base64_data,
+                        "image/png",
+                    )]))
+                } else {
+                    let available_count = images.len();
+                    let requested_idx = index.unwrap_or(0);
+                    Err(McpError::invalid_params(
+                        "Image index out of range",
+                        Some(serde_json::json!({
+                            "requested_index": requested_idx,
+                            "available_images": available_count,
+                            "topic": topic
+                        })),
+                    ))
+                }
+            }
+            Err(_e) => Err(McpError::internal_error("Failed to process bag file", None)),
+        }
+    }
+
+    // Helper methods for PNG creation
+    fn create_png_from_mono8(&self, data: &[u8], width: usize, height: usize) -> Result<Vec<u8>, McpError> {
+        use image::{ImageBuffer, Luma, ImageFormat};
+        use std::io::Cursor;
+
+        let img_buffer = ImageBuffer::<Luma<u8>, _>::from_raw(width as u32, height as u32, data.to_vec())
+            .ok_or_else(|| McpError::internal_error("Failed to create image buffer", None))?;
+
+        let mut png_data = Vec::new();
+        let mut cursor = Cursor::new(&mut png_data);
+        
+        img_buffer.write_to(&mut cursor, ImageFormat::Png)
+            .map_err(|_| McpError::internal_error("Failed to encode PNG", None))?;
+
+        Ok(png_data)
+    }
+
+    fn create_png_from_rgb8(&self, data: &[u8], width: usize, height: usize) -> Result<Vec<u8>, McpError> {
+        use image::{ImageBuffer, Rgb, ImageFormat};
+        use std::io::Cursor;
+
+        let img_buffer = ImageBuffer::<Rgb<u8>, _>::from_raw(width as u32, height as u32, data.to_vec())
+            .ok_or_else(|| McpError::internal_error("Failed to create image buffer", None))?;
+
+        let mut png_data = Vec::new();
+        let mut cursor = Cursor::new(&mut png_data);
+        
+        img_buffer.write_to(&mut cursor, ImageFormat::Png)
+            .map_err(|_| McpError::internal_error("Failed to encode PNG", None))?;
+
+        Ok(png_data)
     }
 }
 
