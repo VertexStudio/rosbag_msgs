@@ -1,23 +1,24 @@
 Extract and return image data from ROS bag files as base64-encoded images for visual analysis and inspection.
 
 ## Purpose
-Retrieves image messages from sensor_msgs/Image topics in ROS bag files and returns them as base64-encoded images that can be displayed by AI assistants and tools. Supports common ROS image encodings including mono8, rgb8, and bgr8.
+Retrieves image data from any ROS message type that contains image information and returns them as base64-encoded images that can be displayed by AI assistants and tools. Uses best-effort parsing to detect and extract image data from various message formats including standard sensor_msgs/Image, compressed formats, and custom image types.
 
 ## Parameter Usage
 
 ### Required Parameters
 - `bag`: Path to the ROS bag file containing image data
-- `topic`: Specific image topic to extract from (e.g., "/camera/image_raw", "/camera/fisheye2/image_raw")
+- `topic`: Specific topic containing image data (e.g., "/camera/image_raw", "/agent3/Comms/recv_sim_comms_visual_detections")
 
 ### Optional Parameters  
 - `index`: Which image to extract by position (defaults to 0 for first image)
 - `timestamp`: Extract image closest to this timestamp in seconds from bag start
 
 ## Image Processing
-- Automatically detects image encoding from ROS message metadata
-- Supports mono8 (grayscale), rgb8, and bgr8 color formats
-- Converts BGR to RGB for proper color display
-- Validates image dimensions and data integrity
+- Automatically detects image data within any message structure
+- Supports uncompressed formats (mono8, rgb8, bgr8) and compressed formats (JPEG, PNG)
+- Handles nested image data (e.g., image_chip arrays, visual_metadata)
+- Converts BGR to RGB for proper color display when format is detected
+- Best-effort extraction from custom message types
 - Returns images in PNG format with base64 encoding for web compatibility
 
 ## Usage Examples
