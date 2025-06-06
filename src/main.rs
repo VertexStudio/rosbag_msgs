@@ -1,5 +1,4 @@
 use clap::Parser;
-use env_logger;
 use log::info;
 use std::path::PathBuf;
 use tokio::sync::mpsc;

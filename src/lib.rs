@@ -44,7 +44,7 @@ pub struct BagProcessor {
     bag_path: PathBuf,
     connections: HashMap<u32, Connection>,
     definitions: HashMap<MessagePath, Vec<Msg>>,
-    registry: HashMap<MessagePath, mpsc::Sender<MessageLog>>,
+    message_registry: HashMap<MessagePath, mpsc::Sender<MessageLog>>,
     topic_registry: HashMap<String, mpsc::Sender<MessageLog>>,
     message_counts: HashMap<MessagePath, usize>,
     topic_counts: HashMap<String, usize>,
@@ -152,7 +152,7 @@ impl BagProcessor {
             bag_path,
             connections: HashMap::new(),
             definitions: HashMap::new(),
-            registry: HashMap::new(),
+            message_registry: HashMap::new(),
             topic_registry: HashMap::new(),
             message_counts: HashMap::new(),
             topic_counts: HashMap::new(),
@@ -165,7 +165,7 @@ impl BagProcessor {
         sender: mpsc::Sender<MessageLog>,
     ) -> Result<()> {
         let msg_path = MessagePath::try_from(msg_path)?;
-        self.registry.insert(msg_path, sender);
+        self.message_registry.insert(msg_path, sender);
         Ok(())
     }
 
@@ -215,9 +215,9 @@ impl BagProcessor {
 
                             // Store dependencies
                             let dependencies = self.get_dependencies(
-                                &conn.topic,
+                                conn.topic,
                                 &message_path,
-                                &conn.message_definition,
+                                conn.message_definition,
                             )?;
                             self.definitions
                                 .insert(message_path.clone(), dependencies.clone());
@@ -259,7 +259,7 @@ impl BagProcessor {
             self.bag_path.display()
         );
 
-        let skip_parsing = self.registry.is_empty() && self.topic_registry.is_empty();
+        let skip_parsing = self.message_registry.is_empty() && self.topic_registry.is_empty();
         if skip_parsing {
             debug!("No message or topic handlers registered: will count messages but skip parsing");
         }
@@ -325,7 +325,7 @@ impl BagProcessor {
                             }
 
                             // Check if this message should be processed (by type or topic)
-                            let message_sender = self.registry.get(&msg_path);
+                            let message_sender = self.message_registry.get(&msg_path);
                             let topic_sender = self.topic_registry.get(&connection.topic);
 
                             if message_sender.is_some() || topic_sender.is_some() {
@@ -335,7 +335,7 @@ impl BagProcessor {
                                         msg_path
                                     ))
                                 })?;
-                                let msg = self.parse_message_data(&message.data, msg_defs);
+                                let msg = self.parse_message_data(message.data, msg_defs);
                                 if let Ok(msg) = msg {
                                     trace!("Message: {}", msg);
                                     total_messages_processed += 1;
@@ -353,7 +353,7 @@ impl BagProcessor {
                                             .entry(msg_path.clone())
                                             .or_insert(0);
                                         if max_messages_per_handler
-                                            .map_or(true, |limit| *handler_count < limit)
+                                            .is_none_or(|limit| *handler_count < limit)
                                         {
                                             trace!("--> {} (by type)", msg_path);
                                             if let Err(e) = sender.send(message_log.clone()).await {
@@ -375,7 +375,7 @@ impl BagProcessor {
                                             .entry(connection.topic.clone())
                                             .or_insert(0);
                                         if max_messages_per_handler
-                                            .map_or(true, |limit| *topic_count < limit)
+                                            .is_none_or(|limit| *topic_count < limit)
                                         {
                                             trace!("--> {} (by topic)", connection.topic);
                                             if let Err(e) = sender.send(message_log).await {
@@ -447,7 +447,7 @@ impl BagProcessor {
         }
 
         // Clear registries to drop all sender channels and signal handlers to exit
-        self.registry.clear();
+        self.message_registry.clear();
         self.topic_registry.clear();
 
         Ok(())
@@ -516,7 +516,7 @@ impl BagProcessor {
 
     // Parses binary message data based on the ros_message::Msg definition
     fn parse_message_data(&self, data: &[u8], msg_defs: &Vec<Msg>) -> Result<Value> {
-        if let Some(msg_def) = msg_defs.get(0) {
+        if let Some(msg_def) = msg_defs.first() {
             // `msg_defs` contains the primary message definition (at index 0) followed by its dependencies
             // Create a cursor to read from the data buffer
             let mut cursor = Cursor::new(data);
@@ -678,7 +678,7 @@ impl BagProcessor {
             }
             DataType::GlobalMessage(global_path) => {
                 // For global messages, we use the global path directly
-                let msg_def = msg_defs.iter().find(|msg| msg.path().eq(&global_path));
+                let msg_def = msg_defs.iter().find(|msg| msg.path().eq(global_path));
                 if let Some(nested_def) = msg_def {
                     // Recursively parse the nested message
                     self.parse_message_data_recursive(cursor, nested_def, msg_defs)
@@ -704,10 +704,10 @@ impl BagProcessor {
 
         match RosBag::new(path) {
             Ok(bag) => Ok(bag),
-            Err(e) => Err(RosbagError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to open bag file: {}", e),
-            ))),
+            Err(e) => Err(RosbagError::IoError(std::io::Error::other(format!(
+                "Failed to open bag file: {}",
+                e
+            )))),
         }
     }
 }
