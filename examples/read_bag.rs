@@ -56,7 +56,9 @@ async fn main() -> Result<()> {
     });
 
     // Process the bag with metadata channel and message limit for demo
-    let process_result = processor.process_bag(Some(metadata_sender), Some(10)).await;
+    let process_result = processor
+        .process_bag(Some(metadata_sender), Some(10), None, None)
+        .await;
 
     // Channels should be closed automatically when process_bag completes
     // Wait for handlers to complete

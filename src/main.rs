@@ -27,6 +27,14 @@ struct Args {
     /// Maximum messages to send to each handler (for limiting output)
     #[clap(long)]
     max: Option<usize>,
+
+    /// Start time for temporal filtering (seconds since bag start)
+    #[clap(long)]
+    start: Option<f64>,
+
+    /// Duration for temporal filtering (seconds from start time)
+    #[clap(long)]
+    duration: Option<f64>,
 }
 
 #[tokio::main]
@@ -134,7 +142,9 @@ async fn main() -> Result<()> {
     }
 
     // Process the bag file
-    let process_result = processor.process_bag(metadata_sender, args.max).await;
+    let process_result = processor
+        .process_bag(metadata_sender, args.max, args.start, args.duration)
+        .await;
 
     // Wait for all handlers to finish
     for handler in handlers {

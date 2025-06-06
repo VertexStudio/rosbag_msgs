@@ -197,6 +197,8 @@ impl BagProcessor {
         &mut self,
         metadata_sender: Option<mpsc::Sender<MetadataEvent>>,
         max_messages_per_handler: Option<usize>,
+        start_time_offset: Option<f64>,
+        duration: Option<f64>,
     ) -> Result<()> {
         debug!("Starting bag processing for: {}", self.bag_path.display());
 
@@ -303,6 +305,10 @@ impl BagProcessor {
         let mut bag_start_time: Option<u64> = None;
         let mut bag_end_time: Option<u64> = None;
 
+        // Track temporal filtering window
+        let mut first_message_time: Option<u64> = None;
+        let temporal_filter_active = start_time_offset.is_some() || duration.is_some();
+
         // Iterate through chunks
         'chunk_loop: for chunk_record_result in bag.chunk_records() {
             let chunk_record = match chunk_record_result {
@@ -342,6 +348,44 @@ impl BagProcessor {
                                 bag_end_time.map_or(message.time, |end| end.max(message.time)),
                             );
 
+                            // Track first message time for temporal filtering
+                            if first_message_time.is_none() {
+                                first_message_time = Some(message.time);
+                            }
+
+                            // Apply temporal filtering if active
+                            let mut message_in_time_window = true;
+                            if temporal_filter_active {
+                                if let Some(first_time) = first_message_time {
+                                    let relative_time_secs =
+                                        (message.time - first_time) as f64 / 1_000_000_000.0;
+
+                                    // Check start time filter
+                                    if let Some(start_offset) = start_time_offset {
+                                        if relative_time_secs < start_offset {
+                                            message_in_time_window = false;
+                                        }
+                                    }
+
+                                    // Check duration filter (start + duration)
+                                    if let (Some(start_offset), Some(duration_secs)) =
+                                        (start_time_offset, duration)
+                                    {
+                                        let end_time = start_offset + duration_secs;
+                                        if relative_time_secs > end_time {
+                                            message_in_time_window = false;
+                                        }
+                                    } else if let (None, Some(duration_secs)) =
+                                        (start_time_offset, duration)
+                                    {
+                                        // Duration without start time means duration from bag start
+                                        if relative_time_secs > duration_secs {
+                                            message_in_time_window = false;
+                                        }
+                                    }
+                                }
+                            }
+
                             // Update message count for this path (always do this for stats)
                             *self.message_counts.entry(msg_path.clone()).or_insert(0) += 1;
 
@@ -356,11 +400,13 @@ impl BagProcessor {
                                 continue;
                             }
 
-                            // Check if this message should be processed (by type or topic)
+                            // Check if this message should be processed (by type, topic, and time window)
                             let message_sender = self.message_registry.get(&msg_path);
                             let topic_sender = self.topic_registry.get(&connection.topic);
 
-                            if message_sender.is_some() || topic_sender.is_some() {
+                            if (message_sender.is_some() || topic_sender.is_some())
+                                && message_in_time_window
+                            {
                                 let msg_defs = self.definitions.get(&msg_path).ok_or_else(|| {
                                     RosbagError::MissingDefinitionError(format!(
                                         "Internal Error: Definitions for {} not found despite connection.",

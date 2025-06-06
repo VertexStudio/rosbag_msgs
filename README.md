@@ -29,6 +29,7 @@ cargo run -- --bag data/race_1.bag --metadata
 cargo run -- --bag data/race_1.bag --messages "sensor_msgs/Imu"
 cargo run -- --bag data/race_1.bag --topics "/camera/imu"
 cargo run -- --bag data/race_1.bag --topics "/camera/imu" --max 5
+cargo run -- --bag data/race_1.bag --topics "/camera/imu" --start 10 --duration 5
 ```
 
 ### Metadata Inspection
@@ -122,6 +123,49 @@ cargo run -- --bag data/race_1.bag --messages "sensor_msgs/Image" --topics "/cam
 cargo run -- --bag data/race_1.bag --metadata --messages "sensor_msgs/Imu" --topics "/camera/odom/sample"
 ```
 
+### Temporal Filtering
+
+Filter messages by time range using `--start` and `--duration` options:
+
+```bash
+# Process first 5 seconds of the bag
+cargo run -- --bag data/race_1.bag --topics "/camera/imu" --duration 5
+
+# Skip first 10 seconds, then process next 5 seconds
+cargo run -- --bag data/race_1.bag --topics "/camera/imu" --start 10 --duration 5
+
+# Process from 15 seconds to end of bag
+cargo run -- --bag data/race_1.bag --topics "/camera/imu" --start 15
+
+# Combine with metadata to see impact on processing stats
+cargo run -- --bag data/race_1.bag --metadata --start 5 --duration 10
+
+# Fractional seconds and multiple topics
+cargo run -- --bag data/race_1.bag --topics "/camera/imu,/camera/odom/sample" --start 2.5 --duration 0.5
+```
+
+**Time parameters:**
+- `--start <seconds>`: Start time offset from bag beginning (optional)
+- `--duration <seconds>`: Duration from start time (optional)
+- Times are relative to the first message timestamp in the bag
+- Both parameters accept decimal values (e.g., `--start 2.5`)
+- Works with all other filters (message types, topics, max limits)
+- Processing stats show filtered vs. total message counts
+
+**Example output with temporal filtering:**
+```
+Processing completed!
+Total messages: 12213
+Total processed: 981
+Processing time: 45ms
+Bag duration: 28.492s
+Bag start time: 1654544051.367208004
+Bag end time: 1654544079.859084368
+Message counts by topic:
+  /camera/imu: 5679
+```
+Shows 981 processed out of 12,213 total messages using `--duration 5`.
+
 ### Processing Modes
 
 The CLI optimizes automatically:
@@ -185,7 +229,7 @@ async fn main() -> Result<()> {
     });
     
     // Process the bag
-    processor.process_bag(None).await?;
+    processor.process_bag(None, None, None, None).await?;
     handler.await.unwrap();
     Ok(())
 }
@@ -212,7 +256,7 @@ async fn main() -> Result<()> {
         }
     });
     
-    processor.process_bag(None).await?;
+    processor.process_bag(None, None, None, None).await?;
     handler.await.unwrap();
     Ok(())
 }
@@ -250,8 +294,34 @@ async fn main() -> Result<()> {
     });
     
     // Process with metadata reporting
-    processor.process_bag(Some(meta_sender)).await?;
+    processor.process_bag(Some(meta_sender), None, None, None).await?;
     meta_handler.await.unwrap();
+    Ok(())
+}
+```
+
+### Temporal Filtering
+
+```rust
+use rosbag_msgs::{BagProcessor, MessageLog, Result};
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut processor = BagProcessor::new("data/race_1.bag".into());
+    
+    let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
+    processor.register_topic("/camera/imu", sender)?;
+    
+    let handler = tokio::spawn(async move {
+        while let Some(msg) = receiver.recv().await {
+            println!("Message at {}: {}", msg.time, msg.msg_path);
+        }
+    });
+    
+    // Process only messages from 10s to 15s (5-second window)
+    processor.process_bag(None, None, Some(10.0), Some(5.0)).await?;
+    handler.await.unwrap();
     Ok(())
 }
 ```
