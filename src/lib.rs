@@ -71,7 +71,7 @@ impl ConnectionInfo {
     pub fn format_structure(&self) -> String {
         let mut output = String::new();
         output.push_str(&format!("topic: {}\n", self.topic));
-        
+
         for (i, msg) in self.dependencies.iter().enumerate() {
             if i == 0 {
                 output.push_str(&format!("type: {}\n", msg.path()));
@@ -109,6 +109,35 @@ pub struct ProcessingStats {
     pub processing_duration_ms: Option<u64>,
 }
 
+impl ProcessingStats {
+    pub fn format_summary(&self) -> String {
+        let mut output = String::new();
+
+        output.push_str("Processing completed!\n");
+        output.push_str(&format!("Total messages: {}\n", self.total_messages));
+
+        if let Some(processed) = self.total_processed {
+            output.push_str(&format!("Total processed: {}\n", processed));
+        }
+
+        if let Some(duration_ms) = self.processing_duration_ms {
+            output.push_str(&format!("Processing time: {}ms\n", duration_ms));
+        }
+
+        output.push_str("Message counts by type:\n");
+        for (msg_type, count) in &self.message_counts {
+            output.push_str(&format!("  {}: {}\n", msg_type, count));
+        }
+
+        output.push_str("Message counts by topic:\n");
+        for (topic, count) in &self.topic_counts {
+            output.push_str(&format!("  {}: {}\n", topic, count));
+        }
+
+        output
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum MetadataEvent {
     ConnectionDiscovered(ConnectionInfo),
@@ -140,11 +169,7 @@ impl BagProcessor {
         Ok(())
     }
 
-    pub fn register_topic(
-        &mut self,
-        topic: &str,
-        sender: mpsc::Sender<MessageLog>,
-    ) -> Result<()> {
+    pub fn register_topic(&mut self, topic: &str, sender: mpsc::Sender<MessageLog>) -> Result<()> {
         self.topic_registry.insert(topic.to_string(), sender);
         Ok(())
     }
@@ -193,7 +218,8 @@ impl BagProcessor {
                                 &message_path,
                                 &conn.message_definition,
                             )?;
-                            self.definitions.insert(message_path.clone(), dependencies.clone());
+                            self.definitions
+                                .insert(message_path.clone(), dependencies.clone());
 
                             // Send connection discovered event
                             if let Some(ref sender) = metadata_sender {
@@ -204,7 +230,9 @@ impl BagProcessor {
                                     message_definition: conn.message_definition.to_string(),
                                     dependencies,
                                 };
-                                let _ = sender.send(MetadataEvent::ConnectionDiscovered(connection_info)).await;
+                                let _ = sender
+                                    .send(MetadataEvent::ConnectionDiscovered(connection_info))
+                                    .await;
                             }
                         }
                         Err(e) => {
@@ -239,9 +267,13 @@ impl BagProcessor {
         debug!("Processing message data for: {}", self.bag_path.display());
         let mut total_messages = 0;
         let mut total_messages_processed = 0;
-        
+
         // Start processing timer only if we're actually going to process messages
-        let processing_start_time = if skip_parsing { None } else { Some(std::time::Instant::now()) };
+        let processing_start_time = if skip_parsing {
+            None
+        } else {
+            Some(std::time::Instant::now())
+        };
 
         // Iterate through chunks
         'chunk_loop: for chunk_record_result in bag.chunk_records() {
@@ -272,22 +304,25 @@ impl BagProcessor {
                             })?;
                             let msg_path = connection.message_path.clone();
                             trace!("Message path: {} {}", message.time, msg_path);
-                            
+
                             // Update message count for this path (always do this for stats)
                             *self.message_counts.entry(msg_path.clone()).or_insert(0) += 1;
-                            
+
                             // Update topic count (always do this for stats)
-                            *self.topic_counts.entry(connection.topic.clone()).or_insert(0) += 1;
-                            
+                            *self
+                                .topic_counts
+                                .entry(connection.topic.clone())
+                                .or_insert(0) += 1;
+
                             if skip_parsing {
                                 // Skip parsing entirely if no handlers are registered
                                 continue;
                             }
-                            
+
                             // Check if this message should be processed (by type or topic)
                             let message_sender = self.registry.get(&msg_path);
                             let topic_sender = self.topic_registry.get(&connection.topic);
-                            
+
                             if message_sender.is_some() || topic_sender.is_some() {
                                 let msg_defs = self.definitions.get(&msg_path).ok_or_else(|| {
                                     RosbagError::MissingDefinitionError(format!(
@@ -316,7 +351,7 @@ impl BagProcessor {
                                         }
                                     }
 
-                                    // Send to topic handler if registered  
+                                    // Send to topic handler if registered
                                     if let Some(sender) = topic_sender {
                                         trace!("--> {} (by topic)", connection.topic);
                                         if let Err(e) = sender.send(message_log).await {
@@ -352,7 +387,7 @@ impl BagProcessor {
         for (msg_path, count) in self.message_counts.iter() {
             debug!("  {}: {}", msg_path, count);
         }
-        
+
         // Log message counts per topic
         debug!("Message counts per topic:");
         for (topic, count) in self.topic_counts.iter() {
@@ -361,11 +396,15 @@ impl BagProcessor {
 
         // Send processing completed event with stats
         if let Some(ref sender) = metadata_sender {
-            let processing_duration_ms = processing_start_time
-                .map(|start| start.elapsed().as_millis() as u64);
+            let processing_duration_ms =
+                processing_start_time.map(|start| start.elapsed().as_millis() as u64);
             let stats = ProcessingStats {
                 total_messages,
-                total_processed: if skip_parsing { None } else { Some(total_messages_processed) },
+                total_processed: if skip_parsing {
+                    None
+                } else {
+                    Some(total_messages_processed)
+                },
                 message_counts: self.message_counts.clone(),
                 topic_counts: self.topic_counts.clone(),
                 processing_duration_ms,

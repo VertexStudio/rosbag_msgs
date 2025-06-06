@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     // Setup metadata channel if requested
     let metadata_sender = if args.metadata {
         let (sender, mut receiver) = mpsc::channel::<MetadataEvent>(100);
-        
+
         // Spawn task to handle metadata events
         tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
@@ -55,27 +55,12 @@ async fn main() -> Result<()> {
                         println!("Processing started...");
                     }
                     MetadataEvent::ProcessingCompleted(stats) => {
-                        println!("Processing completed!");
-                        println!("Total messages: {}", stats.total_messages);
-                        if let Some(processed) = stats.total_processed {
-                            println!("Total processed: {}", processed);
-                        }
-                        if let Some(duration_ms) = stats.processing_duration_ms {
-                            println!("Processing time: {}ms", duration_ms);
-                        }
-                        println!("Message counts by type:");
-                        for (msg_type, count) in stats.message_counts {
-                            println!("  {}: {}", msg_type, count);
-                        }
-                        println!("Message counts by topic:");
-                        for (topic, count) in stats.topic_counts {
-                            println!("  {}: {}", topic, count);
-                        }
+                        print!("{}", stats.format_summary());
                     }
                 }
             }
         });
-        
+
         Some(sender)
     } else {
         None
@@ -83,30 +68,34 @@ async fn main() -> Result<()> {
 
     // Setup message handlers
     let mut handlers = Vec::new();
-    
+
     for msg_type in &args.messages {
         let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
         processor.register_message(msg_type, sender)?;
         info!("Registered handler for {} messages", msg_type);
-        
+
         let msg_type_clone = msg_type.clone();
         let handler = tokio::spawn(async move {
             let mut message_count = 0;
             while let Some(msg) = receiver.recv().await {
                 message_count += 1;
-                
+
                 // Print message info
                 println!(
-                    "{} #{} [{}]: {}", 
-                    msg_type_clone, 
-                    message_count, 
+                    "{} #{} [{}]: {}",
+                    msg_type_clone,
+                    message_count,
                     msg.topic,
-                    serde_json::to_string(&msg.data).unwrap_or_else(|_| "<parse error>".to_string())
+                    serde_json::to_string(&msg.data)
+                        .unwrap_or_else(|_| "<parse error>".to_string())
                 );
             }
-            info!("Processed {} {} messages total", message_count, msg_type_clone);
+            info!(
+                "Processed {} {} messages total",
+                message_count, msg_type_clone
+            );
         });
-        
+
         handlers.push(handler);
     }
 
@@ -115,25 +104,29 @@ async fn main() -> Result<()> {
         let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
         processor.register_topic(topic, sender)?;
         info!("Registered handler for {} topic", topic);
-        
+
         let topic_clone = topic.clone();
         let handler = tokio::spawn(async move {
             let mut message_count = 0;
             while let Some(msg) = receiver.recv().await {
                 message_count += 1;
-                
+
                 // Print message info
                 println!(
-                    "{} #{} [{}]: {}", 
-                    msg.msg_path, 
-                    message_count, 
+                    "{} #{} [{}]: {}",
+                    msg.msg_path,
+                    message_count,
                     topic_clone,
-                    serde_json::to_string(&msg.data).unwrap_or_else(|_| "<parse error>".to_string())
+                    serde_json::to_string(&msg.data)
+                        .unwrap_or_else(|_| "<parse error>".to_string())
                 );
             }
-            info!("Processed {} messages from {} topic total", message_count, topic_clone);
+            info!(
+                "Processed {} messages from {} topic total",
+                message_count, topic_clone
+            );
         });
-        
+
         handlers.push(handler);
     }
 

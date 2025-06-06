@@ -21,28 +21,16 @@ async fn main() -> Result<()> {
         while let Some(event) = metadata_receiver.recv().await {
             match event {
                 MetadataEvent::ConnectionDiscovered(conn) => {
-                    println!("🔗 Connection {}: {} -> {}", conn.id, conn.topic, conn.message_type);
+                    println!(
+                        "🔗 Connection {}: {} -> {}",
+                        conn.id, conn.topic, conn.message_type
+                    );
                 }
                 MetadataEvent::ProcessingStarted => {
                     println!("🚀 Processing started");
                 }
                 MetadataEvent::ProcessingCompleted(stats) => {
-                    println!("✅ Processing completed");
-                    if let Some(duration_ms) = stats.processing_duration_ms {
-                        println!("   Processing time: {}ms", duration_ms);
-                    }
-                    println!("   Total messages: {}", stats.total_messages);
-                    if let Some(processed) = stats.total_processed {
-                        println!("   Processed: {}", processed);
-                    }
-                    println!("   Message types:");
-                    for (msg_type, count) in stats.message_counts {
-                        println!("     {}: {}", msg_type, count);
-                    }
-                    println!("   Topics:");
-                    for (topic, count) in stats.topic_counts {
-                        println!("     {}: {}", topic, count);
-                    }
+                    print!("✅ {}", stats.format_summary());
                 }
             }
         }
