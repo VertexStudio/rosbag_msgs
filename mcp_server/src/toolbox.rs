@@ -1,7 +1,6 @@
-use rmcp;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rmcp::{
@@ -36,11 +35,17 @@ pub struct ProcessRosbagRequest {
     )]
     pub topics: Option<Vec<String>>,
 
-    /// Limit the number of messages processed per handler to prevent overwhelming output (defaults to 5)
+    /// Skip this many messages before starting processing (for pagination)
     #[schemars(
-        description = "Maximum number of messages to process per message type or topic. Defaults to 5 if not specified. Useful for sampling large datasets or limiting output size."
+        description = "Number of messages to skip before starting processing. Used with 'limit' for pagination through large datasets."
     )]
-    pub max: Option<usize>,
+    pub offset: Option<usize>,
+
+    /// Maximum number of messages to process after offset (for pagination)
+    #[schemars(
+        description = "Maximum number of messages to process after applying offset. Use with 'offset' to page through large result sets. Defaults to 5 if not specified."
+    )]
+    pub limit: Option<usize>,
 
     /// Start processing from a specific time offset within the bag recording
     #[schemars(
@@ -105,6 +110,18 @@ impl Toolbox {
         Self {}
     }
 
+    /// Handle potentially large output by either returning it directly or storing to file
+    async fn handle_large_output(
+        &self,
+        content: String,
+        prefix: &str,
+    ) -> Result<CallToolResult, McpError> {
+        let handled_content = rosbag_msgs::handle_large_output(content, prefix);
+        Ok(CallToolResult::success(vec![Content::text(
+            handled_content,
+        )]))
+    }
+
     pub fn get_tools_schema_as_json() -> String {
         let tools: Vec<rmcp::model::Tool> = Self::tool_box().list();
         match serde_json::to_string_pretty(&tools) {
@@ -124,12 +141,12 @@ impl Toolbox {
 
     async fn extract_bag_metadata(
         &self,
-        bag_path: &PathBuf,
+        bag_path: &Path,
     ) -> Result<BagMetadata, Box<dyn std::error::Error + Send + Sync>> {
         use rosbag_msgs::{BagProcessor, MetadataEvent};
         use tokio::sync::mpsc;
 
-        let mut processor = BagProcessor::new(bag_path.clone());
+        let mut processor = BagProcessor::new(bag_path.to_path_buf());
         let (metadata_sender, mut metadata_receiver) = mpsc::channel::<MetadataEvent>(100);
 
         // Spawn task to collect metadata
@@ -175,7 +192,7 @@ impl Toolbox {
 
         // Process bag for metadata only
         processor
-            .process_bag(Some(metadata_sender), None, None, None)
+            .process_bag(Some(metadata_sender), None, None, None, None)
             .await?;
 
         // Collect results
@@ -196,7 +213,8 @@ impl Toolbox {
             metadata,
             messages,
             topics,
-            max,
+            offset,
+            limit,
             start,
             duration,
         }: ProcessRosbagRequest,
@@ -209,14 +227,7 @@ impl Toolbox {
 
         let mut output_lines = Vec::new();
 
-        // Determine effective max before moving values
-        let effective_max = if metadata.unwrap_or(false) && messages.is_none() && topics.is_none() {
-            // Metadata-only mode doesn't need max limit
-            max
-        } else {
-            // Apply default max of 5 for message/topic processing
-            max.or(Some(5))
-        };
+        // No need for effective max calculation since offset/limit is handled in the library
 
         // Setup metadata channel if requested
         let (metadata_sender, metadata_handler) = if metadata.unwrap_or(false) {
@@ -335,7 +346,7 @@ impl Toolbox {
 
         // Process the bag file
         let process_result = processor
-            .process_bag(metadata_sender, effective_max, start, duration)
+            .process_bag(metadata_sender, offset, limit, start, duration)
             .await;
 
         // Wait for all handlers to finish and collect output
@@ -359,7 +370,10 @@ impl Toolbox {
                 } else {
                     output_lines.join("\n")
                 };
-                Ok(CallToolResult::success(vec![Content::text(result_text)]))
+
+                // Use the large output handler to potentially store to file
+                self.handle_large_output(result_text, "rosbag_process")
+                    .await
             }
             Err(_e) => Err(McpError::internal_error("Failed to process bag file", None)),
         }
@@ -403,7 +417,7 @@ impl Toolbox {
         });
 
         // Process the bag file
-        let process_result = processor.process_bag(None, None, None, None).await;
+        let process_result = processor.process_bag(None, None, None, None, None).await;
 
         // Wait for handler to finish
         let _ = handler.await;
@@ -437,10 +451,8 @@ impl Toolbox {
 
                 if let Some(image_msg) = selected_image {
                     // Try to extract image data using best-effort parsing
-                    match crate::image_utils::extract_image_from_message(
-                        &image_msg,
-                        image_path.as_deref(),
-                    ) {
+                    match rosbag_msgs::extract_image_from_message(&image_msg, image_path.as_deref())
+                    {
                         Ok(png_data) => {
                             // Encode as base64
                             let base64_data = base64::Engine::encode(
@@ -547,7 +559,10 @@ impl ServerHandler for Toolbox {
                             }
                             types_list
                         }
-                        "metadata" => metadata.full_metadata,
+                        "metadata" => {
+                            // Handle potentially large metadata using library function
+                            rosbag_msgs::handle_large_output(metadata.full_metadata, "metadata")
+                        }
                         _ => unreachable!(),
                     };
 

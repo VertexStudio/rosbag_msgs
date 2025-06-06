@@ -3,15 +3,20 @@ use log::{debug, error, trace, warn};
 use ros_message::{DataType, Duration, FieldCase, Msg, Time};
 use rosbag::{ChunkRecord, IndexRecord, MessageRecord, RosBag};
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+pub use image_utils::extract_image_from_message;
 pub use ros_message::{MessagePath, Value};
 pub use value::{FromValue, ValueExt};
 
+mod image_utils;
 mod value;
+
+// Maximum output size in characters before storing to disk
+pub const MAX_OUTPUT_SIZE: usize = 20_000;
 
 #[derive(Error, Debug)]
 pub enum RosbagError {
@@ -33,6 +38,62 @@ pub enum RosbagError {
 
 // Use the custom Result type
 pub type Result<T> = std::result::Result<T, RosbagError>;
+
+/// Store large output to a temporary file and return the file path
+pub fn store_large_output_to_file(
+    content: &str,
+    prefix: &str,
+) -> std::result::Result<String, std::io::Error> {
+    use std::env;
+    use std::fs::File;
+
+    let temp_dir = env::temp_dir();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let filename = format!("{}_{}.txt", prefix, timestamp);
+    let file_path = temp_dir.join(filename);
+
+    let mut file = File::create(&file_path)?;
+    file.write_all(content.as_bytes())?;
+    file.flush()?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+/// Handle potentially large output by either returning it directly or truncating with file info
+pub fn handle_large_output(content: String, prefix: &str) -> String {
+    if content.len() > MAX_OUTPUT_SIZE {
+        match store_large_output_to_file(&content, prefix) {
+            Ok(file_path) => {
+                let truncated_content = if content.len() > 1000 {
+                    format!(
+                        "{}\n\n[TRUNCATED - Full output stored at: {}]\n\nOutput size: {} characters\nUse file reading tools to access the complete result.",
+                        &content[..1000],
+                        file_path,
+                        content.len()
+                    )
+                } else {
+                    format!("{}\n\n[Full output stored at: {}]", content, file_path)
+                };
+                truncated_content
+            }
+            Err(e) => {
+                // Fallback to truncated inline content if file creation fails
+                format!(
+                    "{}\n\n[TRUNCATED - Failed to store to file: {}]\nOriginal size: {} characters",
+                    &content[..MAX_OUTPUT_SIZE.min(content.len())],
+                    e,
+                    content.len()
+                )
+            }
+        }
+    } else {
+        content
+    }
+}
 
 pub struct Connection {
     pub topic: String,
@@ -196,7 +257,8 @@ impl BagProcessor {
     pub async fn process_bag(
         &mut self,
         metadata_sender: Option<mpsc::Sender<MetadataEvent>>,
-        max_messages_per_handler: Option<usize>,
+        offset: Option<usize>,
+        limit: Option<usize>,
         start_time_offset: Option<f64>,
         duration: Option<f64>,
     ) -> Result<()> {
@@ -297,9 +359,10 @@ impl BagProcessor {
             Some(std::time::Instant::now())
         };
 
-        // Track messages sent to each handler (for max_messages_per_handler limit)
-        let mut handler_message_counts: HashMap<MessagePath, usize> = HashMap::new();
-        let mut topic_handler_message_counts: HashMap<String, usize> = HashMap::new();
+        // Track global message processing for offset/limit pagination
+        let mut global_message_count = 0;
+        let offset_val = offset.unwrap_or(0);
+        let limit_val = limit.unwrap_or(5); // Default to 5 messages if no limit specified
 
         // Track bag start and end times from actual message timestamps
         let mut bag_start_time: Option<u64> = None;
@@ -425,52 +488,39 @@ impl BagProcessor {
                                         data: msg,
                                     };
 
-                                    // Send to message type handler if registered and under limit
+                                    // Apply global offset/limit pagination
+                                    if global_message_count < offset_val {
+                                        global_message_count += 1;
+                                        continue; // Skip this message due to offset
+                                    }
+
+                                    if global_message_count >= offset_val + limit_val {
+                                        trace!(
+                                            "Reached limit of {} messages after offset {}",
+                                            limit_val, offset_val
+                                        );
+                                        break 'chunk_loop; // Stop processing - we've hit the limit
+                                    }
+
+                                    // Send to message type handler if registered
                                     if let Some(sender) = message_sender {
-                                        let handler_count = handler_message_counts
-                                            .entry(msg_path.clone())
-                                            .or_insert(0);
-                                        if max_messages_per_handler
-                                            .is_none_or(|limit| *handler_count < limit)
-                                        {
-                                            trace!("--> {} (by type)", msg_path);
-                                            if let Err(e) = sender.send(message_log.clone()).await {
-                                                warn!(
-                                                    "Error sending message to type handler: {}",
-                                                    e
-                                                );
-                                                break 'chunk_loop;
-                                            }
-                                            *handler_count += 1;
-                                        } else {
-                                            trace!("Handler for {} reached limit", msg_path);
+                                        trace!("--> {} (by type)", msg_path);
+                                        if let Err(e) = sender.send(message_log.clone()).await {
+                                            warn!("Error sending message to type handler: {}", e);
+                                            break 'chunk_loop;
                                         }
                                     }
 
-                                    // Send to topic handler if registered and under limit
+                                    // Send to topic handler if registered
                                     if let Some(sender) = topic_sender {
-                                        let topic_count = topic_handler_message_counts
-                                            .entry(connection.topic.clone())
-                                            .or_insert(0);
-                                        if max_messages_per_handler
-                                            .is_none_or(|limit| *topic_count < limit)
-                                        {
-                                            trace!("--> {} (by topic)", connection.topic);
-                                            if let Err(e) = sender.send(message_log).await {
-                                                warn!(
-                                                    "Error sending message to topic handler: {}",
-                                                    e
-                                                );
-                                                break 'chunk_loop;
-                                            }
-                                            *topic_count += 1;
-                                        } else {
-                                            trace!(
-                                                "Handler for topic {} reached limit",
-                                                connection.topic
-                                            );
+                                        trace!("--> {} (by topic)", connection.topic);
+                                        if let Err(e) = sender.send(message_log).await {
+                                            warn!("Error sending message to topic handler: {}", e);
+                                            break 'chunk_loop;
                                         }
                                     }
+
+                                    global_message_count += 1;
                                 } else if let Err(e) = msg {
                                     error!("Error parsing message: {}", e);
                                 }

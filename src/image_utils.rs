@@ -1,4 +1,4 @@
-use rosbag_msgs::{MessageLog, Value, ValueExt};
+use crate::{MessageLog, Value, ValueExt};
 
 /// Main image extraction function that handles different message formats
 pub fn extract_image_from_message(

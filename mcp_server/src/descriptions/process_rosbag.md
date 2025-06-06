@@ -33,12 +33,19 @@ Analyze specific time periods:
 - `start=15.5` → From 15.5 seconds to end
 - `start=2.5, duration=0.5` → 500ms window for precise event analysis
 
-### Output Control: `max` parameter
-Limit data volume (defaults to 5 messages per topic/type):
-- `max=10` → Maximum 10 messages per topic/type
-- `max=100` → Sample 100 messages for large datasets
-- Omit `max` → Uses default of 5 messages per topic/type
-- Combined with `metadata=true` shows total vs. processed counts
+### Pagination: `offset` and `limit` parameters
+For processing large datasets in chunks:
+- `offset=0, limit=10` → First 10 messages (page 1)
+- `offset=10, limit=10` → Next 10 messages (page 2)
+- `offset=50, limit=25` → Messages 51-75
+- Used with `messages` or `topics` for systematic pagination
+- Defaults to 5 messages if `limit` is not specified
+
+### Large Output Handling
+Responses exceeding 20,000 characters are automatically stored to temporary files:
+- Returns truncated preview with file path for full results
+- Use file reading tools to access complete output
+- Applies to both message data and metadata responses
 
 ## Effective Parameter Combinations
 
@@ -78,12 +85,23 @@ bag="data/recording.bag", messages=["sensor_msgs/Image"]
 ```
 Returns: 5 sample images (default) without overwhelming output
 
+### Pagination Example
+```
+bag="data/recording.bag", topics=["/camera/image_raw"], offset=0, limit=10
+```
+Returns: First 10 images from camera topic
+
+```
+bag="data/recording.bag", topics=["/camera/image_raw"], offset=10, limit=10  
+```
+Returns: Next 10 images (messages 11-20)
+
 ## Common Workflows
 
 1. **Discovery**: Start with `metadata=true` to see available topics and types
 2. **Selection**: Use discovered types/topics with `messages` or `topics` parameters
 3. **Refinement**: Add `start`/`duration` for specific time windows
-4. **Sampling**: Use `max` to override the default 5-message limit for larger datasets
+4. **Pagination**: Use `offset`/`limit` for systematic processing of large datasets (defaults to 5 messages)
 5. **Validation**: Combine `metadata=true` with filters to verify selection
 
 ## Output Format
