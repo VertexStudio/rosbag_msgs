@@ -1,5 +1,7 @@
 use rmcp;
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::{
@@ -9,23 +11,65 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct StructRequest {
-    pub a: i32,
-    pub b: i32,
+pub struct ProcessRosbagRequest {
+    /// Absolute or relative path to the ROS bag file (.bag extension)
+    #[schemars(
+        description = "File path to the ROS bag file to process (e.g., 'data/race_1.bag', '/path/to/recording.bag')"
+    )]
+    pub bag: String,
+
+    /// Extract bag file structure, message counts, and topic information without parsing message data
+    #[schemars(
+        description = "Return metadata including topic structure, message type definitions, and statistics. Useful for understanding bag contents before processing."
+    )]
+    pub metadata: Option<bool>,
+
+    /// Filter and extract specific ROS message types (e.g., sensor data, navigation data)
+    #[schemars(
+        description = "Array of ROS message types to process (e.g., ['sensor_msgs/Imu', 'nav_msgs/Odometry']). Only messages of these types will be parsed and returned."
+    )]
+    pub messages: Option<Vec<String>>,
+
+    /// Filter by specific ROS topic names to extract data from particular sensors or publishers
+    #[schemars(
+        description = "Array of topic names to process (e.g., ['/camera/imu', '/odom']). Only messages from these topics will be parsed and returned."
+    )]
+    pub topics: Option<Vec<String>>,
+
+    /// Limit the number of messages processed per handler to prevent overwhelming output
+    #[schemars(
+        description = "Maximum number of messages to process per message type or topic. Useful for sampling large datasets or limiting output size."
+    )]
+    pub max: Option<usize>,
+
+    /// Start processing from a specific time offset within the bag recording
+    #[schemars(
+        description = "Time offset in seconds from the beginning of the bag file to start processing (e.g., 10.5 to skip first 10.5 seconds)"
+    )]
+    pub start: Option<f64>,
+
+    /// Process only a specific time window of the recording
+    #[schemars(
+        description = "Duration in seconds to process from the start time (e.g., 5.0 to process 5 seconds of data). Combines with start time for time-windowed analysis."
+    )]
+    pub duration: Option<f64>,
+}
+
+#[derive(Debug)]
+struct BagMetadata {
+    topics: HashMap<String, String>, // topic -> message_type
+    message_types: HashSet<String>,  // unique message types
+    full_metadata: String,           // complete metadata output
 }
 
 #[derive(Clone)]
-pub struct Toolbox {
-    counter: Arc<Mutex<i32>>,
-}
+pub struct Toolbox {}
 
 #[tool(tool_box)]
 impl Toolbox {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self {
-            counter: Arc::new(Mutex::new(0)),
-        }
+        Self {}
     }
 
     pub fn get_tools_schema_as_json() -> String {
@@ -45,55 +89,206 @@ impl Toolbox {
         RawResource::new(uri, name.to_string()).no_annotation()
     }
 
-    #[tool(description = "Increment the counter by 1")]
-    async fn increment(&self) -> Result<CallToolResult, McpError> {
-        let mut counter = self.counter.lock().await;
-        *counter += 1;
-        Ok(CallToolResult::success(vec![Content::text(
-            counter.to_string(),
-        )]))
-    }
-
-    #[tool(description = "Decrement the counter by 1")]
-    async fn decrement(&self) -> Result<CallToolResult, McpError> {
-        let mut counter = self.counter.lock().await;
-        *counter -= 1;
-        Ok(CallToolResult::success(vec![Content::text(
-            counter.to_string(),
-        )]))
-    }
-
-    #[tool(description = "Get the current counter value")]
-    async fn get_value(&self) -> Result<CallToolResult, McpError> {
-        let counter = self.counter.lock().await;
-        Ok(CallToolResult::success(vec![Content::text(
-            counter.to_string(),
-        )]))
-    }
-
-    #[tool(description = "Say hello to the client")]
-    fn say_hello(&self) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text("hello")]))
-    }
-
-    #[tool(description = "Repeat what you say")]
-    fn echo(
+    async fn extract_bag_metadata(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Repeat what you say")]
-        saying: String,
-    ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(saying)]))
+        bag_path: &PathBuf,
+    ) -> Result<BagMetadata, Box<dyn std::error::Error + Send + Sync>> {
+        use rosbag_msgs::{BagProcessor, MetadataEvent};
+        use tokio::sync::mpsc;
+
+        let mut processor = BagProcessor::new(bag_path.clone());
+        let (metadata_sender, mut metadata_receiver) = mpsc::channel::<MetadataEvent>(100);
+
+        // Spawn task to collect metadata
+        let metadata_task = tokio::spawn(async move {
+            let mut metadata_lines = Vec::new();
+            let mut discovered_topics = HashMap::new();
+            let mut discovered_types = HashSet::new();
+
+            while let Some(event) = metadata_receiver.recv().await {
+                match event {
+                    MetadataEvent::ConnectionDiscovered(conn) => {
+                        discovered_topics.insert(conn.topic.clone(), conn.message_type.to_string());
+                        discovered_types.insert(conn.message_type.to_string());
+                        metadata_lines.push(conn.format_structure());
+                    }
+                    MetadataEvent::ProcessingStarted => {
+                        metadata_lines.push("Processing started...".to_string());
+                    }
+                    MetadataEvent::ProcessingCompleted(stats) => {
+                        metadata_lines.push(stats.format_summary());
+                    }
+                }
+            }
+
+            (
+                discovered_topics,
+                discovered_types,
+                metadata_lines.join("\\n"),
+            )
+        });
+
+        // Process bag for metadata only
+        processor
+            .process_bag(Some(metadata_sender), None, None, None)
+            .await?;
+
+        // Collect results
+        let (discovered_topics, discovered_types, metadata_string) = metadata_task.await?;
+
+        Ok(BagMetadata {
+            topics: discovered_topics,
+            message_types: discovered_types,
+            full_metadata: metadata_string,
+        })
     }
 
-    #[tool(description = "Calculate the sum of two numbers")]
-    fn sum(
+    #[tool(description = include_str!("descriptions/process_rosbag.md"))]
+    async fn process_rosbag(
         &self,
-        #[tool(aggr)] StructRequest { a, b }: StructRequest,
+        #[tool(aggr)] ProcessRosbagRequest {
+            bag,
+            metadata,
+            messages,
+            topics,
+            max,
+            start,
+            duration,
+        }: ProcessRosbagRequest,
     ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(
-            (a + b).to_string(),
-        )]))
+        use rosbag_msgs::{BagProcessor, MessageLog, MetadataEvent};
+        use tokio::sync::mpsc;
+
+        let bag_path = PathBuf::from(bag);
+        let mut processor = BagProcessor::new(bag_path);
+
+        let mut output_lines = Vec::new();
+
+        // Setup metadata channel if requested
+        let metadata_sender = if metadata.unwrap_or(false) {
+            let (sender, mut receiver) = mpsc::channel::<MetadataEvent>(100);
+
+            // Spawn task to handle metadata events
+            let output_lines_clone = Arc::new(Mutex::new(Vec::new()));
+            let output_lines_ref = output_lines_clone.clone();
+
+            tokio::spawn(async move {
+                while let Some(event) = receiver.recv().await {
+                    let mut lines = output_lines_ref.lock().await;
+                    match event {
+                        MetadataEvent::ConnectionDiscovered(conn) => {
+                            lines.push(conn.format_structure());
+                        }
+                        MetadataEvent::ProcessingStarted => {
+                            lines.push("Processing started...".to_string());
+                        }
+                        MetadataEvent::ProcessingCompleted(stats) => {
+                            lines.push(stats.format_summary());
+                        }
+                    }
+                }
+            });
+
+            Some(sender)
+        } else {
+            None
+        };
+
+        // Setup message handlers
+        let mut handlers = Vec::new();
+
+        if let Some(message_types) = messages {
+            for msg_type in &message_types {
+                let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
+                if let Err(_e) = processor.register_message(msg_type, sender) {
+                    return Err(McpError::internal_error(
+                        "Failed to register message handler",
+                        None,
+                    ));
+                }
+
+                let msg_type_clone = msg_type.clone();
+                let output_lines_clone = Arc::new(Mutex::new(Vec::new()));
+                let output_lines_ref = output_lines_clone.clone();
+
+                let handler = tokio::spawn(async move {
+                    let mut message_count = 0;
+                    while let Some(msg) = receiver.recv().await {
+                        message_count += 1;
+                        let mut lines = output_lines_ref.lock().await;
+                        lines.push(format!(
+                            "{} #{} [{}]: {}",
+                            msg_type_clone,
+                            message_count,
+                            msg.topic,
+                            serde_json::to_string(&msg.data)
+                                .unwrap_or_else(|_| "<parse error>".to_string())
+                        ));
+                    }
+                });
+
+                handlers.push((handler, output_lines_clone));
+            }
+        }
+
+        // Setup topic handlers
+        if let Some(topic_names) = topics {
+            for topic in &topic_names {
+                let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
+                if let Err(_e) = processor.register_topic(topic, sender) {
+                    return Err(McpError::internal_error(
+                        "Failed to register topic handler",
+                        None,
+                    ));
+                }
+
+                let topic_clone = topic.clone();
+                let output_lines_clone = Arc::new(Mutex::new(Vec::new()));
+                let output_lines_ref = output_lines_clone.clone();
+
+                let handler = tokio::spawn(async move {
+                    let mut message_count = 0;
+                    while let Some(msg) = receiver.recv().await {
+                        message_count += 1;
+                        let mut lines = output_lines_ref.lock().await;
+                        lines.push(format!(
+                            "{} #{} [{}]: {}",
+                            msg.msg_path,
+                            message_count,
+                            topic_clone,
+                            serde_json::to_string(&msg.data)
+                                .unwrap_or_else(|_| "<parse error>".to_string())
+                        ));
+                    }
+                });
+
+                handlers.push((handler, output_lines_clone));
+            }
+        }
+
+        // Process the bag file
+        let process_result = processor
+            .process_bag(metadata_sender, max, start, duration)
+            .await;
+
+        // Wait for all handlers to finish and collect output
+        for (handler, output_lines_ref) in handlers {
+            let _ = handler.await;
+            let lines = output_lines_ref.lock().await;
+            output_lines.extend(lines.clone());
+        }
+
+        match process_result {
+            Ok(_) => {
+                let result_text = if output_lines.is_empty() {
+                    "Bag file processed successfully (no output generated)".to_string()
+                } else {
+                    output_lines.join("\n")
+                };
+                Ok(CallToolResult::success(vec![Content::text(result_text)]))
+            }
+            Err(_e) => Err(McpError::internal_error("Failed to process bag file", None)),
+        }
     }
 }
 
@@ -109,7 +304,7 @@ impl ServerHandler for Toolbox {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides a counter tool that can increment and decrement values. The counter starts at 0 and can be modified using the 'increment' and 'decrement' tools. Use 'get_value' to check the current count.".to_string()),
+            instructions: Some("This server provides tools for processing and analyzing ROS bag files. Use process_rosbag to extract data, metadata, and perform temporal analysis on recorded ROS data.".to_string()),
         }
     }
 
@@ -120,8 +315,7 @@ impl ServerHandler for Toolbox {
     ) -> Result<ListResourcesResult, McpError> {
         Ok(ListResourcesResult {
             resources: vec![
-                self._create_resource_text("str:////Users/to/some/path/", "cwd"),
-                self._create_resource_text("memo://insights", "memo-name"),
+                self._create_resource_text("rosbag://usage", "How to use dynamic bag resources"),
             ],
             next_cursor: None,
         })
@@ -132,25 +326,73 @@ impl ServerHandler for Toolbox {
         ReadResourceRequestParam { uri }: ReadResourceRequestParam,
         _: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
-        match uri.as_str() {
-            "str:////Users/to/some/path/" => {
-                let cwd = "/Users/to/some/path/";
-                Ok(ReadResourceResult {
-                    contents: vec![ResourceContents::text(cwd, uri)],
-                })
+        // Parse URI format: rosbag://{bag_path}/{resource_type}
+        if let Some(captures) =
+            regex::Regex::new(r"^rosbag://(.+)/(topics|message_types|metadata)$")
+                .unwrap()
+                .captures(&uri)
+        {
+            let bag_path = captures.get(1).unwrap().as_str();
+            let resource_type = captures.get(2).unwrap().as_str();
+
+            // Process the bag file to extract metadata
+            let bag_path_buf = PathBuf::from(bag_path);
+            if !bag_path_buf.exists() {
+                return Err(McpError::invalid_params("Bag file not found", None));
             }
-            "memo://insights" => {
-                let memo = "Business Intelligence Memo\n\nAnalysis has revealed 5 key insights ...";
-                Ok(ReadResourceResult {
-                    contents: vec![ResourceContents::text(memo, uri)],
-                })
+
+            match self.extract_bag_metadata(&bag_path_buf).await {
+                Ok(metadata) => {
+                    let content = match resource_type {
+                        "topics" => {
+                            let mut topics_list = String::from("Topics in bag file:\\n");
+                            for (topic, msg_type) in &metadata.topics {
+                                topics_list.push_str(&format!("{} - {}\\n", topic, msg_type));
+                            }
+                            topics_list
+                        }
+                        "message_types" => {
+                            let mut types_list = String::from("Message types in bag file:\\n");
+                            for msg_type in &metadata.message_types {
+                                types_list.push_str(&format!("{}\\n", msg_type));
+                            }
+                            types_list
+                        }
+                        "metadata" => metadata.full_metadata,
+                        _ => unreachable!(),
+                    };
+
+                    Ok(ReadResourceResult {
+                        contents: vec![ResourceContents::text(content, uri)],
+                    })
+                }
+                Err(_e) => Err(McpError::internal_error("Failed to process bag file", None)),
             }
-            _ => Err(McpError::resource_not_found(
-                "resource_not_found",
+        } else if uri == "rosbag://usage" {
+            let usage_text = r#"Dynamic ROS Bag Resources Usage:
+
+Access bag file information using these URI patterns:
+• rosbag://{bag_path}/topics - List all topics in the bag file
+• rosbag://{bag_path}/message_types - List all message types in the bag file  
+• rosbag://{bag_path}/metadata - Complete metadata with structure and statistics
+
+Examples:
+• rosbag://data/race_1.bag/topics
+• rosbag:///absolute/path/to/recording.bag/message_types
+• rosbag://relative/path/bag.bag/metadata
+
+The bag file will be processed automatically to extract real metadata."#;
+
+            Ok(ReadResourceResult {
+                contents: vec![ResourceContents::text(usage_text, uri)],
+            })
+        } else {
+            Err(McpError::resource_not_found(
+                "Invalid resource URI format. Use: rosbag://{bag_path}/{topics|message_types|metadata}",
                 Some(json!({
                     "uri": uri
                 })),
-            )),
+            ))
         }
     }
 
@@ -161,15 +403,72 @@ impl ServerHandler for Toolbox {
     ) -> Result<ListPromptsResult, McpError> {
         Ok(ListPromptsResult {
             next_cursor: None,
-            prompts: vec![Prompt::new(
-                "example_prompt",
-                Some("This is an example prompt that takes one required argument, message"),
-                Some(vec![PromptArgument {
-                    name: "message".to_string(),
-                    description: Some("A message to put in the prompt".to_string()),
-                    required: Some(true),
-                }]),
-            )],
+            prompts: vec![
+                Prompt::new(
+                    "inspect_bag_metadata",
+                    Some("Generate a command to inspect bag file metadata and structure"),
+                    Some(vec![PromptArgument {
+                        name: "bag_path".to_string(),
+                        description: Some("Path to the ROS bag file to inspect".to_string()),
+                        required: Some(true),
+                    }]),
+                ),
+                Prompt::new(
+                    "extract_sensor_data",
+                    Some("Generate a command to extract specific sensor data from a bag file"),
+                    Some(vec![
+                        PromptArgument {
+                            name: "bag_path".to_string(),
+                            description: Some("Path to the ROS bag file".to_string()),
+                            required: Some(true),
+                        },
+                        PromptArgument {
+                            name: "sensor_type".to_string(),
+                            description: Some(
+                                "Type of sensor data (imu, camera, lidar, etc.)".to_string(),
+                            ),
+                            required: Some(true),
+                        },
+                    ]),
+                ),
+                Prompt::new(
+                    "temporal_analysis",
+                    Some("Generate a command for time-windowed analysis of bag data"),
+                    Some(vec![
+                        PromptArgument {
+                            name: "bag_path".to_string(),
+                            description: Some("Path to the ROS bag file".to_string()),
+                            required: Some(true),
+                        },
+                        PromptArgument {
+                            name: "start_time".to_string(),
+                            description: Some("Start time in seconds (optional)".to_string()),
+                            required: Some(false),
+                        },
+                        PromptArgument {
+                            name: "duration".to_string(),
+                            description: Some("Duration in seconds (optional)".to_string()),
+                            required: Some(false),
+                        },
+                    ]),
+                ),
+                Prompt::new(
+                    "topic_filtering",
+                    Some("Generate a command to filter and process specific topics"),
+                    Some(vec![
+                        PromptArgument {
+                            name: "bag_path".to_string(),
+                            description: Some("Path to the ROS bag file".to_string()),
+                            required: Some(true),
+                        },
+                        PromptArgument {
+                            name: "topics".to_string(),
+                            description: Some("Comma-separated list of topic names".to_string()),
+                            required: Some(true),
+                        },
+                    ]),
+                ),
+            ],
         })
     }
 
@@ -179,17 +478,172 @@ impl ServerHandler for Toolbox {
         _: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
         match name.as_str() {
-            "example_prompt" => {
-                let message = arguments
-                    .and_then(|json| json.get("message")?.as_str().map(|s| s.to_string()))
+            "inspect_bag_metadata" => {
+                let bag_path = arguments
+                    .and_then(|json| json.get("bag_path")?.as_str().map(|s| s.to_string()))
                     .ok_or_else(|| {
-                        McpError::invalid_params("No message provided to example_prompt", None)
+                        McpError::invalid_params(
+                            "No bag_path provided to inspect_bag_metadata",
+                            None,
+                        )
                     })?;
 
-                let prompt =
-                    format!("This is an example prompt with your message here: '{message}'");
+                let prompt = format!(
+                    "Use the process_rosbag tool to inspect the metadata and structure of the ROS bag file at '{bag_path}'. \
+                    Call the tool with metadata=true to get:\n\
+                    - Topic structure with message type definitions\n\
+                    - Message counts by type and topic\n\
+                    - Processing statistics\n\
+                    - Bag duration and timing information\n\n\
+                    This will help you understand the contents before extracting specific data."
+                );
                 Ok(GetPromptResult {
-                    description: None,
+                    description: Some(
+                        "Command to inspect bag file metadata and structure".to_string(),
+                    ),
+                    messages: vec![PromptMessage {
+                        role: PromptMessageRole::User,
+                        content: PromptMessageContent::text(prompt),
+                    }],
+                })
+            }
+            "extract_sensor_data" => {
+                let bag_path = arguments
+                    .as_ref()
+                    .and_then(|json| json.get("bag_path")?.as_str().map(|s| s.to_string()))
+                    .ok_or_else(|| {
+                        McpError::invalid_params(
+                            "No bag_path provided to extract_sensor_data",
+                            None,
+                        )
+                    })?;
+                let sensor_type = arguments
+                    .as_ref()
+                    .and_then(|json| json.get("sensor_type")?.as_str().map(|s| s.to_string()))
+                    .ok_or_else(|| {
+                        McpError::invalid_params(
+                            "No sensor_type provided to extract_sensor_data",
+                            None,
+                        )
+                    })?;
+
+                let (message_types, description) = match sensor_type.to_lowercase().as_str() {
+                    "imu" => (
+                        vec!["sensor_msgs/Imu"],
+                        "IMU sensor data including orientation, angular velocity, and linear acceleration",
+                    ),
+                    "camera" | "image" => (
+                        vec!["sensor_msgs/Image", "sensor_msgs/CompressedImage"],
+                        "camera image data",
+                    ),
+                    "lidar" | "laser" => (
+                        vec!["sensor_msgs/LaserScan", "sensor_msgs/PointCloud2"],
+                        "LiDAR/laser scan data",
+                    ),
+                    "odom" | "odometry" => (vec!["nav_msgs/Odometry"], "robot odometry data"),
+                    "pose" => (
+                        vec![
+                            "geometry_msgs/PoseStamped",
+                            "geometry_msgs/PoseWithCovarianceStamped",
+                        ],
+                        "pose estimation data",
+                    ),
+                    "twist" | "cmd_vel" => (vec!["geometry_msgs/Twist"], "velocity command data"),
+                    _ => (
+                        vec![],
+                        "unknown sensor type - please specify message types manually",
+                    ),
+                };
+
+                let prompt = if !message_types.is_empty() {
+                    format!(
+                        "Use the process_rosbag tool to extract {description} from '{bag_path}'.\n\
+                        Call the tool with messages={:?} to process {} messages.\n\
+                        You can also add max=10 to limit output for large datasets.",
+                        message_types, sensor_type
+                    )
+                } else {
+                    format!(
+                        "Use the process_rosbag tool to extract data from '{bag_path}'.\n\
+                        First inspect metadata to find available message types, then specify the appropriate message types for {sensor_type} data."
+                    )
+                };
+
+                Ok(GetPromptResult {
+                    description: Some(format!("Command to extract {sensor_type} sensor data")),
+                    messages: vec![PromptMessage {
+                        role: PromptMessageRole::User,
+                        content: PromptMessageContent::text(prompt),
+                    }],
+                })
+            }
+            "temporal_analysis" => {
+                let bag_path = arguments
+                    .as_ref()
+                    .and_then(|json| json.get("bag_path")?.as_str().map(|s| s.to_string()))
+                    .ok_or_else(|| {
+                        McpError::invalid_params("No bag_path provided to temporal_analysis", None)
+                    })?;
+                let start_time = arguments
+                    .as_ref()
+                    .and_then(|json| json.get("start_time")?.as_f64());
+                let duration = arguments
+                    .as_ref()
+                    .and_then(|json| json.get("duration")?.as_f64());
+
+                let time_params = match (start_time, duration) {
+                    (Some(start), Some(dur)) => format!("start={start}, duration={dur}"),
+                    (Some(start), None) => format!("start={start}"),
+                    (None, Some(dur)) => format!("duration={dur}"),
+                    (None, None) => "start=10.0, duration=5.0".to_string(),
+                };
+
+                let prompt = format!(
+                    "Use the process_rosbag tool to perform temporal analysis on '{bag_path}'.\n\
+                    Call the tool with {time_params} to analyze a specific time window.\n\
+                    Add metadata=true to see how temporal filtering affects message counts.\n\
+                    You can also specify topics or messages to filter the analysis to specific data streams.\n\n\
+                    Example: Extract IMU data from seconds 10-15 of the recording."
+                );
+
+                Ok(GetPromptResult {
+                    description: Some("Command for time-windowed analysis of bag data".to_string()),
+                    messages: vec![PromptMessage {
+                        role: PromptMessageRole::User,
+                        content: PromptMessageContent::text(prompt),
+                    }],
+                })
+            }
+            "topic_filtering" => {
+                let bag_path = arguments
+                    .as_ref()
+                    .and_then(|json| json.get("bag_path")?.as_str().map(|s| s.to_string()))
+                    .ok_or_else(|| {
+                        McpError::invalid_params("No bag_path provided to topic_filtering", None)
+                    })?;
+                let topics = arguments
+                    .as_ref()
+                    .and_then(|json| json.get("topics")?.as_str().map(|s| s.to_string()))
+                    .ok_or_else(|| {
+                        McpError::invalid_params("No topics provided to topic_filtering", None)
+                    })?;
+
+                let topic_list: Vec<&str> = topics.split(',').map(|s| s.trim()).collect();
+                let prompt = format!(
+                    "Use the process_rosbag tool to filter and process specific topics from '{bag_path}'.\n\
+                    Call the tool with topics={:?} to process only these topics:\n{}\n\
+                    Add metadata=true to see topic statistics, or max=5 to limit output per topic.\n\n\
+                    This is useful for focusing on specific sensors or data streams in large bag files.",
+                    topic_list,
+                    topic_list
+                        .iter()
+                        .map(|t| format!("  - {t}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+
+                Ok(GetPromptResult {
+                    description: Some("Command to filter and process specific topics".to_string()),
                     messages: vec![PromptMessage {
                         role: PromptMessageRole::User,
                         content: PromptMessageContent::text(prompt),
@@ -207,7 +661,26 @@ impl ServerHandler for Toolbox {
     ) -> Result<ListResourceTemplatesResult, McpError> {
         Ok(ListResourceTemplatesResult {
             next_cursor: None,
-            resource_templates: Vec::new(),
+            resource_templates: vec![
+                RawResourceTemplate {
+                    uri_template: "rosbag://{bag_path}/topics".to_string(),
+                    name: "ROS Bag Topics".to_string(),
+                    description: Some("List of all topics in the specified ROS bag file".to_string()),
+                    mime_type: Some("text/plain".to_string()),
+                }.no_annotation(),
+                RawResourceTemplate {
+                    uri_template: "rosbag://{bag_path}/message_types".to_string(),
+                    name: "ROS Bag Message Types".to_string(),
+                    description: Some("List of all message types found in the specified ROS bag file".to_string()),
+                    mime_type: Some("text/plain".to_string()),
+                }.no_annotation(),
+                RawResourceTemplate {
+                    uri_template: "rosbag://{bag_path}/metadata".to_string(),
+                    name: "ROS Bag Metadata".to_string(),
+                    description: Some("Complete metadata including topic structure and statistics for the specified ROS bag file".to_string()),
+                    mime_type: Some("text/plain".to_string()),
+                }.no_annotation(),
+            ],
         })
     }
 
