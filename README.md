@@ -1,6 +1,6 @@
 # rosbag_msgs
 
-A Rust library and CLI tool for processing and parsing ROS bag (`.bag`) files. Supports extracting, decoding, and navigating messages with filtering capabilities for data analysis workflows, tooling, or integrating ROS data with Rust projects.
+A Rust library, CLI tool, and MCP server for processing and parsing ROS bag (`.bag`) files. Supports extracting, decoding, and navigating messages with filtering capabilities for data analysis workflows, AI-assisted robotics analysis, and integrating ROS data with Rust projects.
 
 ## Features
 
@@ -12,6 +12,9 @@ A Rust library and CLI tool for processing and parsing ROS bag (`.bag`) files. S
 - Async support via Tokio for concurrent message handling
 - Configurable debug logging
 - JSON output for structured data analysis
+- **MCP server** for AI-assisted analysis through LLMs and assistants
+- **Dynamic resources** for parameterized bag file access
+- **Smart prompts** for common robotics analysis workflows
 
 ## CLI Usage
 
@@ -355,6 +358,10 @@ async fn main() -> Result<()> {
 - `src/main.rs` — CLI interface with filtering options
 - `src/lib.rs` — Core bag processing engine
 - `src/value.rs` — Type-safe value extraction utilities
+- `mcp_server/` — Model Context Protocol server implementation
+  - `src/main.rs` — MCP server entry point
+  - `src/toolbox.rs` — MCP tools, resources, and prompts
+  - `src/descriptions/` — Tool documentation files
 - `data/` — Example bag files for testing
 - `examples/` — Usage examples
 
@@ -363,8 +370,11 @@ async fn main() -> Result<()> {
 ### Building and Testing
 
 ```bash
-# Build
+# Build all components
 cargo build --release
+
+# Build just the MCP server
+cargo build -p rosbag_mcp_server --release
 
 # Run tests
 cargo test
@@ -374,6 +384,9 @@ cargo clippy
 
 # Example with debug logging
 RUST_LOG=debug cargo run -- --bag data/race_1.bag --metadata
+
+# Test MCP server
+cargo run -p rosbag_mcp_server -- toolbox
 ```
 
 ### Architecture
@@ -388,6 +401,123 @@ Benefits:
 - Efficient processing of large bag files
 - Accurate statistics reflecting actual work performed
 
+## MCP Server
+
+The project includes a **Model Context Protocol (MCP) server** that provides programmatic access to ROS bag analysis through AI assistants and LLMs. The MCP server exposes the same functionality as the CLI through a standardized protocol.
+
+### Quick Start
+
+```bash
+# Build and run the MCP server
+cargo build -p rosbag_mcp_server
+cargo run -p rosbag_mcp_server
+
+# Check available tools
+cargo run -p rosbag_mcp_server -- toolbox
+```
+
+### MCP Features
+
+#### Tool: `process_rosbag`
+Main tool with all CLI functionality:
+- **Parameter-based filtering**: Same filtering options as CLI (`messages`, `topics`, `metadata`, etc.)
+- **Temporal analysis**: Time-windowed extraction with `start` and `duration`
+- **Output control**: Sampling with `max` parameter
+- **JSON output**: Structured data for downstream processing
+
+#### Dynamic Resources
+Access bag file metadata through resource URIs:
+```
+rosbag://{bag_path}/topics        - List all topics in bag file
+rosbag://{bag_path}/message_types - List all message types
+rosbag://{bag_path}/metadata      - Complete metadata with statistics
+```
+
+Example resource URIs:
+- `rosbag://data/race_1.bag/topics`
+- `rosbag:///absolute/path/recording.bag/message_types`
+- `rosbag://relative/path/bag.bag/metadata`
+
+#### Smart Prompts
+Context-aware prompts for common workflows:
+- **`inspect_bag_metadata`**: Generate metadata inspection commands
+- **`extract_sensor_data`**: Smart sensor type detection (IMU, camera, LiDAR, etc.)
+- **`temporal_analysis`**: Time-windowed analysis commands
+- **`topic_filtering`**: Topic-specific data extraction
+
+### Usage Examples
+
+#### Basic Discovery
+```json
+{
+  "tool": "process_rosbag",
+  "parameters": {
+    "bag": "data/race_1.bag",
+    "metadata": true
+  }
+}
+```
+Returns: Topic structure, message types, counts, bag duration
+
+#### Sensor Data Extraction
+```json
+{
+  "tool": "process_rosbag", 
+  "parameters": {
+    "bag": "data/race_1.bag",
+    "messages": ["sensor_msgs/Imu"],
+    "max": 50
+  }
+}
+```
+Returns: 50 IMU readings with orientation, angular velocity, acceleration
+
+#### Multi-sensor Fusion Analysis
+```json
+{
+  "tool": "process_rosbag",
+  "parameters": {
+    "bag": "data/race_1.bag", 
+    "messages": ["sensor_msgs/Imu", "nav_msgs/Odometry"],
+    "start": 10.0,
+    "duration": 5.0
+  }
+}
+```
+Returns: IMU and odometry data from 10-15 second window
+
+#### Event Analysis
+```json
+{
+  "tool": "process_rosbag",
+  "parameters": {
+    "bag": "data/race_1.bag",
+    "topics": ["/cmd_vel", "/odom"], 
+    "start": 25.5,
+    "duration": 2.0
+  }
+}
+```
+Returns: Commands and odometry during 2-second event
+
+### Integration
+
+The MCP server can be integrated with:
+- **Claude Desktop**: Add to MCP configuration for direct ROS bag analysis
+- **Custom applications**: Use MCP client libraries for programmatic access
+- **AI workflows**: Embed in LLM-powered robotics analysis pipelines
+- **Research tools**: Integrate with data analysis and visualization platforms
+
+### Architecture
+
+- **Protocol compliance**: Implements MCP specification with tools, resources, and prompts
+- **Dynamic processing**: Real-time bag file analysis without pre-indexing
+- **Resource templates**: Parameterized URIs for flexible bag file access
+- **Error handling**: Proper MCP error responses for missing files and invalid requests
+- **Performance**: Streaming processing with configurable output limits
+
+The MCP server makes ROS bag analysis accessible to AI assistants, enabling natural language queries like "Show me the IMU data from the first 10 seconds" or "What topics are available in this bag file?"
+
 ## License
 
-[Add your license information here]
+[MIT](LICENSE)
