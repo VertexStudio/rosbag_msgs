@@ -1,4 +1,4 @@
-Parse and extract data from ROS bag files (.bag format) using parameter combinations for metadata inspection, message filtering, and temporal analysis.
+Parse and extract data from ROS bag files (.bag format) using parameter combinations for metadata inspection, message filtering, and pagination.
 
 ## Parameter Usage Patterns
 
@@ -26,12 +26,6 @@ Focus on specific data streams:
 - `topics=["/scan"]` → Laser scan data
 - Multiple topics: `topics=["/camera/imu", "/odom"]`
 
-### Temporal Windows: `start` and `duration`
-Analyze specific time periods:
-- `duration=5.0` → First 5 seconds of recording
-- `start=10.0, duration=5.0` → 5-second window starting at 10s
-- `start=15.5` → From 15.5 seconds to end
-- `start=2.5, duration=0.5` → 500ms window for precise event analysis
 
 ### Pagination: `offset` and `limit` parameters
 For processing large datasets in chunks:
@@ -39,7 +33,7 @@ For processing large datasets in chunks:
 - `offset=10, limit=10` → Next 10 messages (page 2)
 - `offset=50, limit=25` → Messages 51-75
 - Used with `messages` or `topics` for systematic pagination
-- Defaults to 5 messages if `limit` is not specified
+- Defaults to 1 message if `limit` is not specified
 
 ### Large Output Handling
 Responses exceeding 20,000 characters are automatically stored to temporary files:
@@ -59,31 +53,31 @@ Returns: Topic structure, message types, counts, bag duration
 ```
 bag="data/recording.bag", messages=["sensor_msgs/Imu"]
 ```
-Returns: 5 IMU readings (default) with orientation, angular velocity, acceleration
+Returns: 1 IMU reading (default) with orientation, angular velocity, acceleration
 
 ### Multi-sensor Fusion Data
 ```
-bag="data/recording.bag", messages=["sensor_msgs/Imu", "nav_msgs/Odometry"], start=10.0, duration=5.0
+bag="data/recording.bag", messages=["sensor_msgs/Imu", "nav_msgs/Odometry"], limit=10
 ```
-Returns: IMU and odometry data from 10-15 second window
+Returns: 10 messages of IMU and odometry data
 
 ### Topic-specific Investigation
 ```
 bag="data/recording.bag", topics=["/camera/imu"], metadata=true
 ```
-Returns: Metadata + first 5 messages (default) from specific topic
+Returns: Metadata + first message (default) from specific topic
 
-### Event Analysis
+### Specific Data Range
 ```
-bag="data/recording.bag", topics=["/cmd_vel", "/odom"], start=25.5, duration=2.0
+bag="data/recording.bag", topics=["/cmd_vel", "/odom"], offset=100, limit=20
 ```
-Returns: Commands and odometry during 2-second event starting at 25.5s
+Returns: Messages 100-119 from command and odometry topics
 
 ### Performance Sampling
 ```
-bag="data/recording.bag", messages=["sensor_msgs/Image"]
+bag="data/recording.bag", messages=["sensor_msgs/Image"], limit=5
 ```
-Returns: 5 sample images (default) without overwhelming output
+Returns: 5 sample images without overwhelming output
 
 ### Pagination Example
 ```
@@ -100,8 +94,8 @@ Returns: Next 10 images (messages 11-20)
 
 1. **Discovery**: Start with `metadata=true` to see available topics and types
 2. **Selection**: Use discovered types/topics with `messages` or `topics` parameters
-3. **Refinement**: Add `start`/`duration` for specific time windows
-4. **Pagination**: Use `offset`/`limit` for systematic processing of large datasets (defaults to 5 messages)
+3. **Sampling**: Add `limit` to control output size (defaults to 1 message)
+4. **Pagination**: Use `offset`/`limit` for systematic processing of large datasets
 5. **Validation**: Combine `metadata=true` with filters to verify selection
 
 ## Output Format

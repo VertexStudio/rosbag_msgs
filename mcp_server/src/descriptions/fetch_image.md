@@ -10,8 +10,7 @@ Retrieves image data from any ROS message type that contains image information a
 - `topic`: Specific topic containing image data (e.g., "/camera/image_raw", "/agent3/Comms/recv_sim_comms_visual_detections")
 
 ### Optional Parameters  
-- `index`: Which image to extract by position (defaults to 0 for first image)
-- `timestamp`: Extract image closest to this timestamp in seconds from bag start
+- `offset`: Number of images to skip before extracting (defaults to 0 for first image)
 - `image_path`: Array specifying the nested path to image data within the message (e.g., ["visual_metadata", "0", "image_chip", "0"])
 
 ## Image Processing
@@ -30,17 +29,11 @@ bag="data/recording.bag", topic="/camera/image_raw"
 ```
 Returns: First image from the camera topic as base64 PNG
 
-### Extract Specific Image by Index
+### Extract Specific Image by Offset
 ```
-bag="data/recording.bag", topic="/camera/fisheye2/image_raw", index=10
+bag="data/recording.bag", topic="/camera/fisheye2/image_raw", offset=10
 ```
 Returns: 11th image (0-indexed) from the fisheye camera
-
-### Extract Image by Timestamp
-```
-bag="data/recording.bag", topic="/camera/image_raw", timestamp=15.5
-```
-Returns: Image closest to 15.5 seconds from bag start
 
 ### Extract Nested Image with Specific Path
 ```
@@ -54,5 +47,5 @@ Returns base64-encoded PNG image data with MIME type "image/png". The image can 
 ## Common Use Cases
 - Visual inspection of camera data from robotics recordings
 - Extracting reference frames for analysis or documentation
-- Sampling images at specific timestamps during events
+- Sampling images at specific positions in the recording
 - Debugging camera calibration and image quality issues

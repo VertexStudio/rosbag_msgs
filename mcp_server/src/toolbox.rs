@@ -43,21 +43,9 @@ pub struct ProcessRosbagRequest {
 
     /// Maximum number of messages to process after offset (for pagination)
     #[schemars(
-        description = "Maximum number of messages to process after applying offset. Use with 'offset' to page through large result sets. Defaults to 5 if not specified."
+        description = "Maximum number of messages to process after applying offset. Use with 'offset' to page through large result sets. Defaults to 1 if not specified."
     )]
     pub limit: Option<usize>,
-
-    /// Start processing from a specific time offset within the bag recording
-    #[schemars(
-        description = "Time offset in seconds from the beginning of the bag file to start processing (e.g., 10.5 to skip first 10.5 seconds)"
-    )]
-    pub start: Option<f64>,
-
-    /// Process only a specific time window of the recording
-    #[schemars(
-        description = "Duration in seconds to process from the start time (e.g., 5.0 to process 5 seconds of data). Combines with start time for time-windowed analysis."
-    )]
-    pub duration: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -74,17 +62,11 @@ pub struct FetchImageRequest {
     )]
     pub topic: String,
 
-    /// Index of image to extract (0-based)
+    /// Skip this many images before extracting (0-based offset)
     #[schemars(
-        description = "Index of the image to extract from the topic (0 = first image, 1 = second, etc.). Defaults to 0 if not specified."
+        description = "Number of images to skip before extracting (0 = first image, 1 = second, etc.). Defaults to 0 if not specified."
     )]
-    pub index: Option<usize>,
-
-    /// Timestamp to find closest image
-    #[schemars(
-        description = "Extract image closest to this timestamp in seconds from bag start. Overrides index if specified."
-    )]
-    pub timestamp: Option<f64>,
+    pub offset: Option<usize>,
 
     /// Path to nested image data within the message
     #[schemars(
@@ -215,8 +197,6 @@ impl Toolbox {
             topics,
             offset,
             limit,
-            start,
-            duration,
         }: ProcessRosbagRequest,
     ) -> Result<CallToolResult, McpError> {
         use rosbag_msgs::{BagProcessor, MessageLog, MetadataEvent};
@@ -346,7 +326,7 @@ impl Toolbox {
 
         // Process the bag file
         let process_result = processor
-            .process_bag(metadata_sender, offset, limit, start, duration)
+            .process_bag(metadata_sender, offset, limit, None, None)
             .await;
 
         // Wait for all handlers to finish and collect output
@@ -385,8 +365,7 @@ impl Toolbox {
         #[tool(aggr)] FetchImageRequest {
             bag,
             topic,
-            index,
-            timestamp,
+            offset,
             image_path,
         }: FetchImageRequest,
     ) -> Result<CallToolResult, McpError> {
@@ -416,8 +395,10 @@ impl Toolbox {
             }
         });
 
-        // Process the bag file
-        let process_result = processor.process_bag(None, None, None, None, None).await;
+        // Process the bag file using offset/limit for image fetching
+        // Default to getting just 1 image at the specified offset
+        let limit = Some(1);
+        let process_result = processor.process_bag(None, offset, limit, None, None).await;
 
         // Wait for handler to finish
         let _ = handler.await;
@@ -433,21 +414,8 @@ impl Toolbox {
                     ));
                 }
 
-                // Select image by index or timestamp
-                let selected_image = if let Some(target_timestamp) = timestamp {
-                    // Find image closest to timestamp
-                    images
-                        .iter()
-                        .min_by_key(|img| {
-                            let img_time = img.time as f64 / 1_000_000_000.0;
-                            ((img_time - target_timestamp).abs() * 1000.0) as u64
-                        })
-                        .cloned()
-                } else {
-                    // Use index (default to 0)
-                    let idx = index.unwrap_or(0);
-                    images.get(idx).cloned()
-                };
+                // Use first (and only) image from the offset/limit result
+                let selected_image = images.first().cloned();
 
                 if let Some(image_msg) = selected_image {
                     // Try to extract image data using best-effort parsing
@@ -477,11 +445,11 @@ impl Toolbox {
                     }
                 } else {
                     let available_count = images.len();
-                    let requested_idx = index.unwrap_or(0);
+                    let requested_offset = offset.unwrap_or(0);
                     Err(McpError::invalid_params(
-                        "Image index out of range",
+                        "No image found at offset",
                         Some(serde_json::json!({
-                            "requested_index": requested_idx,
+                            "requested_offset": requested_offset,
                             "available_images": available_count,
                             "topic": topic
                         })),

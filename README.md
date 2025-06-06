@@ -232,7 +232,7 @@ async fn main() -> Result<()> {
     });
     
     // Process the bag
-    processor.process_bag(None, None, None, None).await?;
+    processor.process_bag(None, Some(0), Some(10), None, None).await?;
     handler.await.unwrap();
     Ok(())
 }
@@ -259,7 +259,7 @@ async fn main() -> Result<()> {
         }
     });
     
-    processor.process_bag(None, None, None, None).await?;
+    processor.process_bag(None, Some(0), Some(10), None, None).await?;
     handler.await.unwrap();
     Ok(())
 }

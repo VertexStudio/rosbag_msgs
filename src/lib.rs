@@ -362,7 +362,7 @@ impl BagProcessor {
         // Track global message processing for offset/limit pagination
         let mut global_message_count = 0;
         let offset_val = offset.unwrap_or(0);
-        let limit_val = limit.unwrap_or(5); // Default to 5 messages if no limit specified
+        let limit_val = limit.unwrap_or(1); // Default to 1 message if no limit specified
 
         // Track bag start and end times from actual message timestamps
         let mut bag_start_time: Option<u64> = None;
