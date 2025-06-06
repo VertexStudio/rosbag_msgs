@@ -45,6 +45,7 @@ pub struct BagProcessor {
     connections: HashMap<u32, Connection>,
     definitions: HashMap<MessagePath, Vec<Msg>>,
     registry: HashMap<MessagePath, mpsc::Sender<MessageLog>>,
+    topic_registry: HashMap<String, mpsc::Sender<MessageLog>>,
     message_counts: HashMap<MessagePath, usize>,
 }
 
@@ -121,6 +122,7 @@ impl BagProcessor {
             connections: HashMap::new(),
             definitions: HashMap::new(),
             registry: HashMap::new(),
+            topic_registry: HashMap::new(),
             message_counts: HashMap::new(),
         }
     }
@@ -132,6 +134,15 @@ impl BagProcessor {
     ) -> Result<()> {
         let msg_path = MessagePath::try_from(msg_path)?;
         self.registry.insert(msg_path, sender);
+        Ok(())
+    }
+
+    pub fn register_topic(
+        &mut self,
+        topic: &str,
+        sender: mpsc::Sender<MessageLog>,
+    ) -> Result<()> {
+        self.topic_registry.insert(topic.to_string(), sender);
         Ok(())
     }
 
@@ -216,9 +227,9 @@ impl BagProcessor {
             self.bag_path.display()
         );
 
-        let skip_parsing = self.registry.is_empty();
+        let skip_parsing = self.registry.is_empty() && self.topic_registry.is_empty();
         if skip_parsing {
-            debug!("No message handlers registered: will count messages but skip parsing");
+            debug!("No message or topic handlers registered: will count messages but skip parsing");
         }
 
         // --- Pass 2: Process Messages ---
@@ -267,8 +278,11 @@ impl BagProcessor {
                                 continue;
                             }
                             
-                            // Only process if this message type is registered
-                            if let Some(sender) = self.registry.get(&msg_path) {
+                            // Check if this message should be processed (by type or topic)
+                            let message_sender = self.registry.get(&msg_path);
+                            let topic_sender = self.topic_registry.get(&connection.topic);
+                            
+                            if message_sender.is_some() || topic_sender.is_some() {
                                 let msg_defs = self.definitions.get(&msg_path).ok_or_else(|| {
                                     RosbagError::MissingDefinitionError(format!(
                                         "Internal Error: Definitions for {} not found despite connection.",
@@ -280,18 +294,29 @@ impl BagProcessor {
                                     trace!("Message: {}", msg);
                                     total_messages_processed += 1;
 
-                                    trace!("--> {}", msg_path);
-                                    if let Err(e) = sender
-                                        .send(MessageLog {
-                                            time: message.time,
-                                            topic: connection.topic.clone(),
-                                            msg_path,
-                                            data: msg,
-                                        })
-                                        .await
-                                    {
-                                        warn!("Error sending message: {}", e);
-                                        break 'chunk_loop;
+                                    let message_log = MessageLog {
+                                        time: message.time,
+                                        topic: connection.topic.clone(),
+                                        msg_path: msg_path.clone(),
+                                        data: msg,
+                                    };
+
+                                    // Send to message type handler if registered
+                                    if let Some(sender) = message_sender {
+                                        trace!("--> {} (by type)", msg_path);
+                                        if let Err(e) = sender.send(message_log.clone()).await {
+                                            warn!("Error sending message to type handler: {}", e);
+                                            break 'chunk_loop;
+                                        }
+                                    }
+
+                                    // Send to topic handler if registered  
+                                    if let Some(sender) = topic_sender {
+                                        trace!("--> {} (by topic)", connection.topic);
+                                        if let Err(e) = sender.send(message_log).await {
+                                            warn!("Error sending message to topic handler: {}", e);
+                                            break 'chunk_loop;
+                                        }
                                     }
                                 } else if let Err(e) = msg {
                                     error!("Error parsing message: {}", e);

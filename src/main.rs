@@ -20,6 +20,10 @@ struct Args {
     /// List of message types to register and print (comma-separated)
     #[clap(short, long, value_delimiter = ',')]
     messages: Vec<String>,
+
+    /// List of topic names to filter by (comma-separated)
+    #[clap(short, long, value_delimiter = ',')]
+    topics: Vec<String>,
 }
 
 #[tokio::main]
@@ -97,6 +101,33 @@ async fn main() -> Result<()> {
                 );
             }
             info!("Processed {} {} messages total", message_count, msg_type_clone);
+        });
+        
+        handlers.push(handler);
+    }
+
+    // Setup topic handlers
+    for topic in &args.topics {
+        let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
+        processor.register_topic(topic, sender)?;
+        info!("Registered handler for {} topic", topic);
+        
+        let topic_clone = topic.clone();
+        let handler = tokio::spawn(async move {
+            let mut message_count = 0;
+            while let Some(msg) = receiver.recv().await {
+                message_count += 1;
+                
+                // Print message info
+                println!(
+                    "{} #{} [{}]: {}", 
+                    msg.msg_path, 
+                    message_count, 
+                    topic_clone,
+                    serde_json::to_string(&msg.data).unwrap_or_else(|_| "<parse error>".to_string())
+                );
+            }
+            info!("Processed {} messages from {} topic total", message_count, topic_clone);
         });
         
         handlers.push(handler);
