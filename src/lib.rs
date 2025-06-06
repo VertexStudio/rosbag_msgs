@@ -126,7 +126,7 @@ impl ProcessingStats {
 
         output.push_str("Message counts by type:\n");
         for (msg_type, count) in &self.message_counts {
-            output.push_str(&format!("  {:?}: {}\n", msg_type, count));
+            output.push_str(&format!("  {}: {}\n", msg_type, count));
         }
 
         output.push_str("Message counts by topic:\n");
@@ -445,6 +445,10 @@ impl BagProcessor {
             };
             let _ = sender.send(MetadataEvent::ProcessingCompleted(stats)).await;
         }
+
+        // Clear registries to drop all sender channels and signal handlers to exit
+        self.registry.clear();
+        self.topic_registry.clear();
 
         Ok(())
     }

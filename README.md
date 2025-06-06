@@ -28,6 +28,7 @@ cargo run -- --help
 cargo run -- --bag data/race_1.bag --metadata
 cargo run -- --bag data/race_1.bag --messages "sensor_msgs/Imu"
 cargo run -- --bag data/race_1.bag --topics "/camera/imu"
+cargo run -- --bag data/race_1.bag --topics "/camera/imu" --max 5
 ```
 
 ### Metadata Inspection
