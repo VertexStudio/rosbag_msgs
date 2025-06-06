@@ -67,6 +67,10 @@ async fn main() -> Result<()> {
                         for (msg_type, count) in stats.message_counts {
                             println!("  {}: {}", msg_type, count);
                         }
+                        println!("Message counts by topic:");
+                        for (topic, count) in stats.topic_counts {
+                            println!("  {}: {}", topic, count);
+                        }
                     }
                 }
             }

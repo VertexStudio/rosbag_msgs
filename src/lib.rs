@@ -47,6 +47,7 @@ pub struct BagProcessor {
     registry: HashMap<MessagePath, mpsc::Sender<MessageLog>>,
     topic_registry: HashMap<String, mpsc::Sender<MessageLog>>,
     message_counts: HashMap<MessagePath, usize>,
+    topic_counts: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,7 @@ pub struct ProcessingStats {
     pub total_messages: usize,
     pub total_processed: Option<usize>,
     pub message_counts: HashMap<MessagePath, usize>,
+    pub topic_counts: HashMap<String, usize>,
     pub processing_duration_ms: Option<u64>,
 }
 
@@ -124,6 +126,7 @@ impl BagProcessor {
             registry: HashMap::new(),
             topic_registry: HashMap::new(),
             message_counts: HashMap::new(),
+            topic_counts: HashMap::new(),
         }
     }
 
@@ -273,6 +276,9 @@ impl BagProcessor {
                             // Update message count for this path (always do this for stats)
                             *self.message_counts.entry(msg_path.clone()).or_insert(0) += 1;
                             
+                            // Update topic count (always do this for stats)
+                            *self.topic_counts.entry(connection.topic.clone()).or_insert(0) += 1;
+                            
                             if skip_parsing {
                                 // Skip parsing entirely if no handlers are registered
                                 continue;
@@ -346,6 +352,12 @@ impl BagProcessor {
         for (msg_path, count) in self.message_counts.iter() {
             debug!("  {}: {}", msg_path, count);
         }
+        
+        // Log message counts per topic
+        debug!("Message counts per topic:");
+        for (topic, count) in self.topic_counts.iter() {
+            debug!("  {}: {}", topic, count);
+        }
 
         // Send processing completed event with stats
         if let Some(ref sender) = metadata_sender {
@@ -355,6 +367,7 @@ impl BagProcessor {
                 total_messages,
                 total_processed: if skip_parsing { None } else { Some(total_messages_processed) },
                 message_counts: self.message_counts.clone(),
+                topic_counts: self.topic_counts.clone(),
                 processing_duration_ms,
             };
             let _ = sender.send(MetadataEvent::ProcessingCompleted(stats)).await;

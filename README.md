@@ -71,6 +71,10 @@ Message counts by type:
   sensor_msgs/Imu: 5679
   nav_msgs/Odometry: 5679
   sensor_msgs/Image: 855
+Message counts by topic:
+  /camera/imu: 5679
+  /camera/odom/sample: 5679
+  /camera/fisheye2/image_raw: 855
 ```
 
 Metadata-only mode scans and counts all messages but skips parsing for faster execution.
@@ -255,7 +259,7 @@ async fn main() -> Result<()> {
 
 ### Data Analysis
 - Sensor data extraction by message type or topic
-- Message frequency analysis without full processing overhead
+- Message frequency analysis by both type and topic without processing overhead
 - Bag file inspection and structure analysis
 
 ### Development & Debugging
