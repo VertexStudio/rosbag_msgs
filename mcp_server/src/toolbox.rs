@@ -80,6 +80,12 @@ pub struct FetchImageRequest {
         description = "Extract image closest to this timestamp in seconds from bag start. Overrides index if specified."
     )]
     pub timestamp: Option<f64>,
+
+    /// Path to nested image data within the message
+    #[schemars(
+        description = "Optional path to nested image data (e.g., ['visual_metadata', 0, 'image_chip', 0] for first image in array). If not specified, tries to find image data at the root level."
+    )]
+    pub image_path: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -367,6 +373,7 @@ impl Toolbox {
             topic,
             index,
             timestamp,
+            image_path,
         }: FetchImageRequest,
     ) -> Result<CallToolResult, McpError> {
         use rosbag_msgs::{BagProcessor, MessageLog};
@@ -404,7 +411,7 @@ impl Toolbox {
         match process_result {
             Ok(_) => {
                 let images = images_collected.lock().await;
-                
+
                 if images.is_empty() {
                     return Err(McpError::invalid_params(
                         "No images found in the specified topic",
@@ -430,10 +437,16 @@ impl Toolbox {
 
                 if let Some(image_msg) = selected_image {
                     // Try to extract image data using best-effort parsing
-                    match crate::image_utils::extract_image_from_message(&image_msg) {
+                    match crate::image_utils::extract_image_from_message(
+                        &image_msg,
+                        image_path.as_deref(),
+                    ) {
                         Ok(png_data) => {
                             // Encode as base64
-                            let base64_data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png_data);
+                            let base64_data = base64::Engine::encode(
+                                &base64::engine::general_purpose::STANDARD,
+                                &png_data,
+                            );
 
                             // Return as image content
                             Ok(CallToolResult::success(vec![Content::image(
@@ -441,16 +454,14 @@ impl Toolbox {
                                 "image/png",
                             )]))
                         }
-                        Err(e) => {
-                            Err(McpError::internal_error(
-                                "Failed to extract image from message",
-                                Some(serde_json::json!({
-                                    "topic": topic,
-                                    "message_type": image_msg.msg_path,
-                                    "error": e
-                                }))
-                            ))
-                        }
+                        Err(e) => Err(McpError::internal_error(
+                            "Failed to extract image from message",
+                            Some(serde_json::json!({
+                                "topic": topic,
+                                "message_type": image_msg.msg_path,
+                                "error": e
+                            })),
+                        )),
                     }
                 } else {
                     let available_count = images.len();

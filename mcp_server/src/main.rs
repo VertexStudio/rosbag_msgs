@@ -3,8 +3,8 @@ use clap::{Parser, Subcommand};
 use rmcp::{ServiceExt, transport::stdio};
 use tracing_subscriber::{self, EnvFilter};
 
-mod toolbox;
 mod image_utils;
+mod toolbox;
 
 #[derive(Parser)]
 #[command(name = "rosbag_mcp_server")]

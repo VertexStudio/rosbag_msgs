@@ -12,6 +12,7 @@ Retrieves image data from any ROS message type that contains image information a
 ### Optional Parameters  
 - `index`: Which image to extract by position (defaults to 0 for first image)
 - `timestamp`: Extract image closest to this timestamp in seconds from bag start
+- `image_path`: Array specifying the nested path to image data within the message (e.g., ["visual_metadata", "0", "image_chip", "0"])
 
 ## Image Processing
 - Automatically detects image data within any message structure
@@ -40,6 +41,12 @@ Returns: 11th image (0-indexed) from the fisheye camera
 bag="data/recording.bag", topic="/camera/image_raw", timestamp=15.5
 ```
 Returns: Image closest to 15.5 seconds from bag start
+
+### Extract Nested Image with Specific Path
+```
+bag="data/recording.bag", topic="/agent3/Comms/recv_sim_comms_visual_detections", image_path=["visual_metadata", "0", "image_chip", "0"]
+```
+Returns: First image from the nested image_chip array within visual_metadata
 
 ## Output Format
 Returns base64-encoded PNG image data with MIME type "image/png". The image can be directly displayed by AI assistants and visualization tools that support base64 image content.

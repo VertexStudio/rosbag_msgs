@@ -1,8 +1,19 @@
 use rosbag_msgs::{MessageLog, Value, ValueExt};
 
 /// Main image extraction function that handles different message formats
-pub fn extract_image_from_message(msg: &MessageLog) -> Result<Vec<u8>, String> {
+pub fn extract_image_from_message(
+    msg: &MessageLog,
+    image_path: Option<&[String]>,
+) -> Result<Vec<u8>, String> {
     let data = &msg.data;
+
+    // If a specific path is provided, try to extract from that location
+    if let Some(path) = image_path {
+        if let Ok(result) = try_extract_from_path(data, path) {
+            return Ok(result);
+        }
+        return Err(format!("No image data found at specified path: {:?}", path));
+    }
 
     // Strategy 1: Try standard sensor_msgs/Image format
     if let Ok(result) = try_extract_standard_image(data) {
@@ -19,7 +30,53 @@ pub fn extract_image_from_message(msg: &MessageLog) -> Result<Vec<u8>, String> {
         return Ok(result);
     }
 
-    Err(format!("No image data found in message of type: {}", msg.msg_path))
+    Err(format!(
+        "No image data found in message of type: {}",
+        msg.msg_path
+    ))
+}
+
+/// Try to extract image from a specific path provided by the LLM
+fn try_extract_from_path(data: &Value, path: &[String]) -> Result<Vec<u8>, String> {
+    let mut current_data = data;
+
+    // Navigate to the specified path
+    for segment in path {
+        match current_data {
+            Value::Message(map) => {
+                current_data = map
+                    .get(segment)
+                    .ok_or_else(|| format!("Field '{}' not found", segment))?;
+            }
+            Value::Array(array) => {
+                // If the segment is a number, treat it as an array index
+                if let Ok(index) = segment.parse::<usize>() {
+                    current_data = array
+                        .get(index)
+                        .ok_or_else(|| format!("Array index {} out of bounds", index))?;
+                } else {
+                    return Err(format!("Expected array index but got '{}'", segment));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "Cannot navigate into non-message/non-array value at '{}'",
+                    segment
+                ));
+            }
+        }
+    }
+
+    // Try to extract image from the final location
+    if let Ok(result) = try_extract_standard_image(current_data) {
+        return Ok(result);
+    }
+
+    if let Ok(result) = try_extract_compressed_image(current_data) {
+        return Ok(result);
+    }
+
+    Err("No image data found at specified path".to_string())
 }
 
 /// Try to extract standard sensor_msgs/Image
@@ -27,14 +84,18 @@ fn try_extract_standard_image(data: &Value) -> Result<Vec<u8>, String> {
     let pixels = data.get_u8_array("data").map_err(|_| "No 'data' field")?;
     let width = data.get::<u32>("width").map_err(|_| "No 'width' field")? as usize;
     let height = data.get::<u32>("height").map_err(|_| "No 'height' field")? as usize;
-    let encoding = data.get::<String>("encoding").map_err(|_| "No 'encoding' field")?;
+    let encoding = data
+        .get::<String>("encoding")
+        .map_err(|_| "No 'encoding' field")?;
 
     create_png_from_raw_image(&pixels, width, height, &encoding)
 }
 
 /// Try to extract compressed image (format + data fields)
 fn try_extract_compressed_image(data: &Value) -> Result<Vec<u8>, String> {
-    let format = data.get::<String>("format").map_err(|_| "No 'format' field")?;
+    let format = data
+        .get::<String>("format")
+        .map_err(|_| "No 'format' field")?;
     let image_data = data.get_u8_array("data").map_err(|_| "No 'data' field")?;
 
     // If it's already a compressed format, try to decode and re-encode as PNG
@@ -52,7 +113,7 @@ fn try_extract_compressed_image(data: &Value) -> Result<Vec<u8>, String> {
 fn try_extract_nested_image(data: &Value) -> Result<Vec<u8>, String> {
     // Look for common image field names in nested structures
     let image_field_names = ["image_chip", "image", "compressed_image", "visual_metadata"];
-    
+
     for field_name in &image_field_names {
         if let Ok(nested_data) = data.get_nested_value(&[field_name]) {
             // Handle arrays of images
@@ -82,31 +143,40 @@ fn try_extract_nested_image(data: &Value) -> Result<Vec<u8>, String> {
 }
 
 /// Convert raw image data to PNG
-fn create_png_from_raw_image(data: &[u8], width: usize, height: usize, encoding: &str) -> Result<Vec<u8>, String> {
-    use image::{ImageBuffer, Luma, Rgb, ImageFormat};
+fn create_png_from_raw_image(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    encoding: &str,
+) -> Result<Vec<u8>, String> {
+    use image::{ImageBuffer, ImageFormat, Luma, Rgb};
     use std::io::Cursor;
 
     match encoding {
         "mono8" => {
-            let img_buffer = ImageBuffer::<Luma<u8>, _>::from_raw(width as u32, height as u32, data.to_vec())
-                .ok_or("Failed to create mono8 image buffer")?;
+            let img_buffer =
+                ImageBuffer::<Luma<u8>, _>::from_raw(width as u32, height as u32, data.to_vec())
+                    .ok_or("Failed to create mono8 image buffer")?;
 
             let mut png_data = Vec::new();
             let mut cursor = Cursor::new(&mut png_data);
-            
-            img_buffer.write_to(&mut cursor, ImageFormat::Png)
+
+            img_buffer
+                .write_to(&mut cursor, ImageFormat::Png)
                 .map_err(|e| format!("Failed to encode PNG: {}", e))?;
 
             Ok(png_data)
         }
         "rgb8" => {
-            let img_buffer = ImageBuffer::<Rgb<u8>, _>::from_raw(width as u32, height as u32, data.to_vec())
-                .ok_or("Failed to create rgb8 image buffer")?;
+            let img_buffer =
+                ImageBuffer::<Rgb<u8>, _>::from_raw(width as u32, height as u32, data.to_vec())
+                    .ok_or("Failed to create rgb8 image buffer")?;
 
             let mut png_data = Vec::new();
             let mut cursor = Cursor::new(&mut png_data);
-            
-            img_buffer.write_to(&mut cursor, ImageFormat::Png)
+
+            img_buffer
+                .write_to(&mut cursor, ImageFormat::Png)
                 .map_err(|e| format!("Failed to encode PNG: {}", e))?;
 
             Ok(png_data)
@@ -117,24 +187,26 @@ fn create_png_from_raw_image(data: &[u8], width: usize, height: usize, encoding:
             for i in 0..(height * width) {
                 let base = i * 3;
                 if base + 2 < data.len() {
-                    rgb_data[base] = data[base + 2];     // R <- B
+                    rgb_data[base] = data[base + 2]; // R <- B
                     rgb_data[base + 1] = data[base + 1]; // G <- G
-                    rgb_data[base + 2] = data[base];     // B <- R
+                    rgb_data[base + 2] = data[base]; // B <- R
                 }
             }
 
-            let img_buffer = ImageBuffer::<Rgb<u8>, _>::from_raw(width as u32, height as u32, rgb_data)
-                .ok_or("Failed to create bgr8 image buffer")?;
+            let img_buffer =
+                ImageBuffer::<Rgb<u8>, _>::from_raw(width as u32, height as u32, rgb_data)
+                    .ok_or("Failed to create bgr8 image buffer")?;
 
             let mut png_data = Vec::new();
             let mut cursor = Cursor::new(&mut png_data);
-            
-            img_buffer.write_to(&mut cursor, ImageFormat::Png)
+
+            img_buffer
+                .write_to(&mut cursor, ImageFormat::Png)
                 .map_err(|e| format!("Failed to encode PNG: {}", e))?;
 
             Ok(png_data)
         }
-        _ => Err(format!("Unsupported encoding: {}", encoding))
+        _ => Err(format!("Unsupported encoding: {}", encoding)),
     }
 }
 
@@ -146,7 +218,7 @@ fn convert_compressed_to_png(data: &[u8], format: &str) -> Result<Vec<u8>, Strin
     let input_format = match format {
         "jpeg" | "jpg" => ImageFormat::Jpeg,
         "png" => return Ok(data.to_vec()), // Already PNG
-        _ => return Err(format!("Unsupported format: {}", format))
+        _ => return Err(format!("Unsupported format: {}", format)),
     };
 
     // Decode the compressed image
