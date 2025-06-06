@@ -126,7 +126,7 @@ impl ProcessingStats {
 
         output.push_str("Message counts by type:\n");
         for (msg_type, count) in &self.message_counts {
-            output.push_str(&format!("  {}: {}\n", msg_type, count));
+            output.push_str(&format!("  {:?}: {}\n", msg_type, count));
         }
 
         output.push_str("Message counts by topic:\n");
@@ -177,6 +177,7 @@ impl BagProcessor {
     pub async fn process_bag(
         &mut self,
         metadata_sender: Option<mpsc::Sender<MetadataEvent>>,
+        max_messages_per_handler: Option<usize>,
     ) -> Result<()> {
         debug!("Starting bag processing for: {}", self.bag_path.display());
 
@@ -275,6 +276,10 @@ impl BagProcessor {
             Some(std::time::Instant::now())
         };
 
+        // Track messages sent to each handler (for max_messages_per_handler limit)
+        let mut handler_message_counts: HashMap<MessagePath, usize> = HashMap::new();
+        let mut topic_handler_message_counts: HashMap<String, usize> = HashMap::new();
+
         // Iterate through chunks
         'chunk_loop: for chunk_record_result in bag.chunk_records() {
             let chunk_record = match chunk_record_result {
@@ -342,21 +347,50 @@ impl BagProcessor {
                                         data: msg,
                                     };
 
-                                    // Send to message type handler if registered
+                                    // Send to message type handler if registered and under limit
                                     if let Some(sender) = message_sender {
-                                        trace!("--> {} (by type)", msg_path);
-                                        if let Err(e) = sender.send(message_log.clone()).await {
-                                            warn!("Error sending message to type handler: {}", e);
-                                            break 'chunk_loop;
+                                        let handler_count = handler_message_counts
+                                            .entry(msg_path.clone())
+                                            .or_insert(0);
+                                        if max_messages_per_handler
+                                            .map_or(true, |limit| *handler_count < limit)
+                                        {
+                                            trace!("--> {} (by type)", msg_path);
+                                            if let Err(e) = sender.send(message_log.clone()).await {
+                                                warn!(
+                                                    "Error sending message to type handler: {}",
+                                                    e
+                                                );
+                                                break 'chunk_loop;
+                                            }
+                                            *handler_count += 1;
+                                        } else {
+                                            trace!("Handler for {} reached limit", msg_path);
                                         }
                                     }
 
-                                    // Send to topic handler if registered
+                                    // Send to topic handler if registered and under limit
                                     if let Some(sender) = topic_sender {
-                                        trace!("--> {} (by topic)", connection.topic);
-                                        if let Err(e) = sender.send(message_log).await {
-                                            warn!("Error sending message to topic handler: {}", e);
-                                            break 'chunk_loop;
+                                        let topic_count = topic_handler_message_counts
+                                            .entry(connection.topic.clone())
+                                            .or_insert(0);
+                                        if max_messages_per_handler
+                                            .map_or(true, |limit| *topic_count < limit)
+                                        {
+                                            trace!("--> {} (by topic)", connection.topic);
+                                            if let Err(e) = sender.send(message_log).await {
+                                                warn!(
+                                                    "Error sending message to topic handler: {}",
+                                                    e
+                                                );
+                                                break 'chunk_loop;
+                                            }
+                                            *topic_count += 1;
+                                        } else {
+                                            trace!(
+                                                "Handler for topic {} reached limit",
+                                                connection.topic
+                                            );
                                         }
                                     }
                                 } else if let Err(e) = msg {

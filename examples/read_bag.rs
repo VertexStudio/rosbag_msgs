@@ -36,28 +36,27 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Spawn task to handle IMU messages (simplified)
+    // Spawn task to handle IMU messages (limited by process_bag)
     let imu_handler = tokio::spawn(async move {
         let mut count = 0;
         while let Some(msg) = imu_receiver.recv().await {
             count += 1;
-            if count % 1000 == 0 {
-                if let Ok(accel) = msg.data.get_nested_value(&["linear_acceleration"]) {
-                    if let (Ok(x), Ok(y), Ok(z)) = (
-                        accel.get::<f64>("x"),
-                        accel.get::<f64>("y"),
-                        accel.get::<f64>("z"),
-                    ) {
-                        println!("📊 IMU #{}: accel=({:.2}, {:.2}, {:.2})", count, x, y, z);
-                    }
+
+            if let Ok(accel) = msg.data.get_nested_value(&["linear_acceleration"]) {
+                if let (Ok(x), Ok(y), Ok(z)) = (
+                    accel.get::<f64>("x"),
+                    accel.get::<f64>("y"),
+                    accel.get::<f64>("z"),
+                ) {
+                    println!("📊 IMU #{}: accel=({:.2}, {:.2}, {:.2})", count, x, y, z);
                 }
             }
         }
-        println!("📈 Total IMU messages processed: {}", count);
+        println!("📈 Received {} IMU messages (limited for demo)", count);
     });
 
-    // Process the bag with metadata channel
-    let process_result = processor.process_bag(Some(metadata_sender)).await;
+    // Process the bag with metadata channel and message limit for demo
+    let process_result = processor.process_bag(Some(metadata_sender), Some(10)).await;
 
     // Wait for handlers to complete
     let _ = metadata_handler.await;

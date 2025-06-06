@@ -24,6 +24,10 @@ struct Args {
     /// List of topic names to filter by (comma-separated)
     #[clap(short, long, value_delimiter = ',')]
     topics: Vec<String>,
+
+    /// Maximum messages to send to each handler (for limiting output)
+    #[clap(long)]
+    max: Option<usize>,
 }
 
 #[tokio::main]
@@ -131,7 +135,7 @@ async fn main() -> Result<()> {
     }
 
     // Process the bag file
-    let process_result = processor.process_bag(metadata_sender).await;
+    let process_result = processor.process_bag(metadata_sender, args.max).await;
 
     // Wait for all handlers to finish
     for handler in handlers {
