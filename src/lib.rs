@@ -101,9 +101,9 @@ impl ConnectionInfo {
 #[derive(Debug, Clone)]
 pub struct ProcessingStats {
     pub total_messages: usize,
-    pub total_processed: usize,
+    pub total_processed: Option<usize>,
     pub message_counts: HashMap<MessagePath, usize>,
-    pub processing_duration_ms: u64,
+    pub processing_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +139,6 @@ impl BagProcessor {
         &mut self,
         metadata_sender: Option<mpsc::Sender<MetadataEvent>>,
     ) -> Result<()> {
-        let start_time = std::time::Instant::now();
         debug!("Starting bag processing for: {}", self.bag_path.display());
 
         // Send processing started event
@@ -217,29 +216,18 @@ impl BagProcessor {
             self.bag_path.display()
         );
 
-        // Early exit if no message handlers are registered
-        if self.registry.is_empty() {
-            debug!("No message handlers registered: skipping message processing");
-            
-            // Send processing completed event with zero stats
-            if let Some(ref sender) = metadata_sender {
-                let processing_duration = start_time.elapsed();
-                let stats = ProcessingStats {
-                    total_messages: 0,
-                    total_processed: 0,
-                    message_counts: HashMap::new(),
-                    processing_duration_ms: processing_duration.as_millis() as u64,
-                };
-                let _ = sender.send(MetadataEvent::ProcessingCompleted(stats)).await;
-            }
-            
-            return Ok(());
+        let skip_parsing = self.registry.is_empty();
+        if skip_parsing {
+            debug!("No message handlers registered: will count messages but skip parsing");
         }
 
         // --- Pass 2: Process Messages ---
         debug!("Processing message data for: {}", self.bag_path.display());
         let mut total_messages = 0;
         let mut total_messages_processed = 0;
+        
+        // Start processing timer only if we're actually going to process messages
+        let processing_start_time = if skip_parsing { None } else { Some(std::time::Instant::now()) };
 
         // Iterate through chunks
         'chunk_loop: for chunk_record_result in bag.chunk_records() {
@@ -270,21 +258,28 @@ impl BagProcessor {
                             })?;
                             let msg_path = connection.message_path.clone();
                             trace!("Message path: {} {}", message.time, msg_path);
-                            let msg_defs = self.definitions.get(&msg_path).ok_or_else(|| {
-                                RosbagError::MissingDefinitionError(format!(
-                                    "Internal Error: Definitions for {} not found despite connection.",
-                                    msg_path
-                                ))
-                            })?;
-                            let msg = self.parse_message_data(&message.data, msg_defs);
-                            if let Ok(msg) = msg {
-                                trace!("Message: {}", msg);
-                                total_messages_processed += 1;
+                            
+                            // Update message count for this path (always do this for stats)
+                            *self.message_counts.entry(msg_path.clone()).or_insert(0) += 1;
+                            
+                            if skip_parsing {
+                                // Skip parsing entirely if no handlers are registered
+                                continue;
+                            }
+                            
+                            // Only process if this message type is registered
+                            if let Some(sender) = self.registry.get(&msg_path) {
+                                let msg_defs = self.definitions.get(&msg_path).ok_or_else(|| {
+                                    RosbagError::MissingDefinitionError(format!(
+                                        "Internal Error: Definitions for {} not found despite connection.",
+                                        msg_path
+                                    ))
+                                })?;
+                                let msg = self.parse_message_data(&message.data, msg_defs);
+                                if let Ok(msg) = msg {
+                                    trace!("Message: {}", msg);
+                                    total_messages_processed += 1;
 
-                                // Update message count for this path
-                                *self.message_counts.entry(msg_path.clone()).or_insert(0) += 1;
-
-                                if let Some(sender) = self.registry.get(&msg_path) {
                                     trace!("--> {}", msg_path);
                                     if let Err(e) = sender
                                         .send(MessageLog {
@@ -298,9 +293,9 @@ impl BagProcessor {
                                         warn!("Error sending message: {}", e);
                                         break 'chunk_loop;
                                     }
+                                } else if let Err(e) = msg {
+                                    error!("Error parsing message: {}", e);
                                 }
-                            } else if let Err(e) = msg {
-                                error!("Error parsing message: {}", e);
                             }
                         }
                     }
@@ -313,11 +308,13 @@ impl BagProcessor {
             self.bag_path.display(),
             total_messages
         );
-        debug!(
-            "Total messages processed in {}: {}",
-            self.bag_path.display(),
-            total_messages_processed
-        );
+        if !skip_parsing {
+            debug!(
+                "Total messages processed in {}: {}",
+                self.bag_path.display(),
+                total_messages_processed
+            );
+        }
 
         // Log message counts per message path
         debug!("Message counts per type:");
@@ -327,12 +324,13 @@ impl BagProcessor {
 
         // Send processing completed event with stats
         if let Some(ref sender) = metadata_sender {
-            let processing_duration = start_time.elapsed();
+            let processing_duration_ms = processing_start_time
+                .map(|start| start.elapsed().as_millis() as u64);
             let stats = ProcessingStats {
                 total_messages,
-                total_processed: total_messages_processed,
+                total_processed: if skip_parsing { None } else { Some(total_messages_processed) },
                 message_counts: self.message_counts.clone(),
-                processing_duration_ms: processing_duration.as_millis() as u64,
+                processing_duration_ms,
             };
             let _ = sender.send(MetadataEvent::ProcessingCompleted(stats)).await;
         }

@@ -53,8 +53,12 @@ async fn main() -> Result<()> {
                     MetadataEvent::ProcessingCompleted(stats) => {
                         println!("Processing completed!");
                         println!("Total messages: {}", stats.total_messages);
-                        println!("Total processed: {}", stats.total_processed);
-                        println!("Processing time: {}ms", stats.processing_duration_ms);
+                        if let Some(processed) = stats.total_processed {
+                            println!("Total processed: {}", processed);
+                        }
+                        if let Some(duration_ms) = stats.processing_duration_ms {
+                            println!("Processing time: {}ms", duration_ms);
+                        }
                         println!("Message counts by type:");
                         for (msg_type, count) in stats.message_counts {
                             println!("  {}: {}", msg_type, count);
