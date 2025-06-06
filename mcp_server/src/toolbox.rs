@@ -36,9 +36,9 @@ pub struct ProcessRosbagRequest {
     )]
     pub topics: Option<Vec<String>>,
 
-    /// Limit the number of messages processed per handler to prevent overwhelming output
+    /// Limit the number of messages processed per handler to prevent overwhelming output (defaults to 5)
     #[schemars(
-        description = "Maximum number of messages to process per message type or topic. Useful for sampling large datasets or limiting output size."
+        description = "Maximum number of messages to process per message type or topic. Defaults to 5 if not specified. Useful for sampling large datasets or limiting output size."
     )]
     pub max: Option<usize>,
 
@@ -164,15 +164,24 @@ impl Toolbox {
 
         let mut output_lines = Vec::new();
 
+        // Determine effective max before moving values
+        let effective_max = if metadata.unwrap_or(false) && messages.is_none() && topics.is_none() {
+            // Metadata-only mode doesn't need max limit
+            max
+        } else {
+            // Apply default max of 5 for message/topic processing
+            max.or(Some(5))
+        };
+
         // Setup metadata channel if requested
-        let metadata_sender = if metadata.unwrap_or(false) {
+        let (metadata_sender, metadata_handler) = if metadata.unwrap_or(false) {
             let (sender, mut receiver) = mpsc::channel::<MetadataEvent>(100);
 
             // Spawn task to handle metadata events
             let output_lines_clone = Arc::new(Mutex::new(Vec::new()));
             let output_lines_ref = output_lines_clone.clone();
 
-            tokio::spawn(async move {
+            let handler = tokio::spawn(async move {
                 while let Some(event) = receiver.recv().await {
                     let mut lines = output_lines_ref.lock().await;
                     match event {
@@ -189,9 +198,9 @@ impl Toolbox {
                 }
             });
 
-            Some(sender)
+            (Some(sender), Some((handler, output_lines_clone)))
         } else {
-            None
+            (None, None)
         };
 
         // Setup message handlers
@@ -268,7 +277,7 @@ impl Toolbox {
 
         // Process the bag file
         let process_result = processor
-            .process_bag(metadata_sender, max, start, duration)
+            .process_bag(metadata_sender, effective_max, start, duration)
             .await;
 
         // Wait for all handlers to finish and collect output
@@ -276,6 +285,13 @@ impl Toolbox {
             let _ = handler.await;
             let lines = output_lines_ref.lock().await;
             output_lines.extend(lines.clone());
+        }
+
+        // Collect metadata output if available
+        if let Some((metadata_handler, metadata_output_ref)) = metadata_handler {
+            let _ = metadata_handler.await;
+            let metadata_lines = metadata_output_ref.lock().await;
+            output_lines.extend(metadata_lines.clone());
         }
 
         match process_result {

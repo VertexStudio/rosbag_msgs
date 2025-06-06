@@ -34,9 +34,10 @@ Analyze specific time periods:
 - `start=2.5, duration=0.5` → 500ms window for precise event analysis
 
 ### Output Control: `max` parameter
-Limit data volume:
+Limit data volume (defaults to 5 messages per topic/type):
 - `max=10` → Maximum 10 messages per topic/type
 - `max=100` → Sample 100 messages for large datasets
+- Omit `max` → Uses default of 5 messages per topic/type
 - Combined with `metadata=true` shows total vs. processed counts
 
 ## Effective Parameter Combinations
@@ -49,9 +50,9 @@ Returns: Topic structure, message types, counts, bag duration
 
 ### Sensor Data Analysis
 ```
-bag="data/recording.bag", messages=["sensor_msgs/Imu"], max=50
+bag="data/recording.bag", messages=["sensor_msgs/Imu"]
 ```
-Returns: 50 IMU readings with orientation, angular velocity, acceleration
+Returns: 5 IMU readings (default) with orientation, angular velocity, acceleration
 
 ### Multi-sensor Fusion Data
 ```
@@ -61,9 +62,9 @@ Returns: IMU and odometry data from 10-15 second window
 
 ### Topic-specific Investigation
 ```
-bag="data/recording.bag", topics=["/camera/imu"], metadata=true, max=20
+bag="data/recording.bag", topics=["/camera/imu"], metadata=true
 ```
-Returns: Metadata + first 20 messages from specific topic
+Returns: Metadata + first 5 messages (default) from specific topic
 
 ### Event Analysis
 ```
@@ -73,16 +74,16 @@ Returns: Commands and odometry during 2-second event starting at 25.5s
 
 ### Performance Sampling
 ```
-bag="data/recording.bag", messages=["sensor_msgs/Image"], max=5
+bag="data/recording.bag", messages=["sensor_msgs/Image"]
 ```
-Returns: 5 sample images without overwhelming output
+Returns: 5 sample images (default) without overwhelming output
 
 ## Common Workflows
 
 1. **Discovery**: Start with `metadata=true` to see available topics and types
 2. **Selection**: Use discovered types/topics with `messages` or `topics` parameters
 3. **Refinement**: Add `start`/`duration` for specific time windows
-4. **Sampling**: Use `max` to limit output for large datasets
+4. **Sampling**: Use `max` to override the default 5-message limit for larger datasets
 5. **Validation**: Combine `metadata=true` with filters to verify selection
 
 ## Output Format
