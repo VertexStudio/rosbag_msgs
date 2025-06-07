@@ -129,6 +129,40 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
+    pub fn format_basic(&self) -> String {
+        format!("{}: {}", self.topic, self.message_type)
+    }
+
+    pub fn format_definition(&self) -> String {
+        let mut output = String::new();
+        output.push_str(&format!("topic: {}\n", self.topic));
+
+        for (i, msg) in self.dependencies.iter().enumerate() {
+            if i == 0 {
+                output.push_str(&format!("type: {}\n", msg.path()));
+                for field in msg.fields() {
+                    output.push_str(&format!(
+                        "        |      {}: {} {:?}\n",
+                        field.name(),
+                        field.datatype(),
+                        field.case()
+                    ));
+                }
+            } else {
+                output.push_str(&format!("        |- {}\n", msg.path()));
+                for field in msg.fields() {
+                    output.push_str(&format!(
+                        "        |      {}: {} {:?}\n",
+                        field.name(),
+                        field.datatype(),
+                        field.case()
+                    ));
+                }
+            }
+        }
+        output
+    }
+
     pub fn format_structure(&self) -> String {
         let mut output = String::new();
         output.push_str(&format!("topic: {}\n", self.topic));
@@ -185,7 +219,6 @@ impl ProcessingStats {
     pub fn format_summary(&self) -> String {
         let mut output = String::new();
 
-        output.push_str("Processing completed!\n");
         output.push_str(&format!("Total messages: {}\n", self.total_messages));
 
         if let Some(processed) = self.total_processed {
@@ -213,12 +246,12 @@ impl ProcessingStats {
             output.push_str(&format!("Bag end time: {}.{:09}\n", end_sec, end_nsec));
         }
 
-        output.push_str("Message counts by type:\n");
+        output.push_str("\nMessage counts by type:\n");
         for (msg_type, count) in &self.message_counts {
             output.push_str(&format!("  {}: {}\n", msg_type, count));
         }
 
-        output.push_str("Message counts by topic:\n");
+        output.push_str("\nMessage counts by topic:\n");
         for (topic, count) in &self.topic_counts {
             output.push_str(&format!("  {}: {}\n", topic, count));
         }

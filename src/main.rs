@@ -125,13 +125,9 @@ struct Args {
     #[clap(subcommand)]
     command: Option<Commands>,
 
-    /// Path to the ROS bag file (for process_bag mode)
+    /// Path to the ROS bag file (for default process_bag mode)
     #[clap(short, long, value_parser)]
     bag: Option<PathBuf>,
-
-    /// Print metadata (connections and stats)
-    #[clap(long, action)]
-    metadata: bool,
 
     /// List of message types to register and print (comma-separated)
     #[clap(short, long, value_delimiter = ',')]
@@ -152,15 +148,21 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Show bag file information (topics, message types, statistics)
+    Info {
+        /// Path to the ROS bag file
+        #[clap(short, long)]
+        bag: PathBuf,
+
+        /// Include detailed message type definitions
+        #[clap(long, action)]
+        definitions: bool,
+    },
     /// Process ROS bag file and extract data with filtering and pagination
     ProcessBag {
         /// Path to the ROS bag file
         #[clap(short, long)]
         bag: PathBuf,
-
-        /// Print metadata (connections and stats)
-        #[clap(long, action)]
-        metadata: bool,
 
         /// List of message types to register and print (comma-separated)
         #[clap(short, long, value_delimiter = ',')]
@@ -202,9 +204,76 @@ enum Commands {
     },
 }
 
+async fn info_command(bag: PathBuf, definitions: bool) -> Result<()> {
+    info!("Getting info for bag file: {}", bag.display());
+
+    let mut processor = BagProcessor::new(bag.clone());
+
+    // Setup metadata channel
+    let (metadata_sender, mut metadata_receiver) = mpsc::channel::<MetadataEvent>(100);
+
+    // Spawn task to handle metadata events
+    let metadata_handler = tokio::spawn(async move {
+        let mut basic_lines = Vec::new();
+        let mut definition_lines = Vec::new();
+        let mut stats_lines = Vec::new();
+
+        while let Some(event) = metadata_receiver.recv().await {
+            match event {
+                MetadataEvent::ConnectionDiscovered(conn) => {
+                    basic_lines.push(conn.format_basic());
+                    if definitions {
+                        definition_lines.push(conn.format_definition());
+                    }
+                }
+                MetadataEvent::ProcessingStarted => {
+                    // Don't include processing started message
+                }
+                MetadataEvent::ProcessingCompleted(stats) => {
+                    stats_lines.push(stats.format_summary());
+                }
+            }
+        }
+
+        // Print stats first
+        if !stats_lines.is_empty() {
+            for line in stats_lines {
+                print!("{}", line);
+            }
+            println!(); // Empty line separator
+        }
+
+        // Print topics list
+        if !basic_lines.is_empty() {
+            println!("Topics and message types:");
+            for line in basic_lines {
+                println!("  {}", line);
+            }
+        }
+
+        // Print definitions if requested
+        if definitions && !definition_lines.is_empty() {
+            println!(); // Empty line separator
+            println!("Message definitions:\n");
+            for line in definition_lines {
+                println!("{}", line);
+            }
+        }
+    });
+
+    // Process bag for metadata only
+    processor
+        .process_bag(Some(metadata_sender), None, None, None, None)
+        .await?;
+
+    // Wait for metadata handler to finish
+    let _ = metadata_handler.await;
+
+    Ok(())
+}
+
 async fn process_bag_command(
     bag: PathBuf,
-    metadata: bool,
     messages: Vec<String>,
     topics: Vec<String>,
     offset: Option<usize>,
@@ -215,31 +284,15 @@ async fn process_bag_command(
     // Create and configure the processor
     let mut processor = BagProcessor::new(bag);
 
-    // Setup metadata channel if requested OR if we need pagination info
+    // Setup metadata channel only if we need pagination info
     let needs_pagination = offset.is_some() || limit.is_some();
-    let metadata_sender = if metadata || needs_pagination {
+    let metadata_sender = if needs_pagination {
         let (sender, mut receiver) = mpsc::channel::<MetadataEvent>(100);
 
-        // Spawn task to handle metadata events
+        // Spawn task to consume metadata events (we don't print them here)
         tokio::spawn(async move {
-            while let Some(event) = receiver.recv().await {
-                match event {
-                    MetadataEvent::ConnectionDiscovered(conn) => {
-                        if metadata {
-                            print!("{}", conn.format_structure());
-                        }
-                    }
-                    MetadataEvent::ProcessingStarted => {
-                        if metadata {
-                            println!("Processing started...");
-                        }
-                    }
-                    MetadataEvent::ProcessingCompleted(stats) => {
-                        if metadata {
-                            print!("{}", stats.format_summary());
-                        }
-                    }
-                }
+            while let Some(_event) = receiver.recv().await {
+                // Just consume events, pagination info comes from process_bag result
             }
         });
 
@@ -307,7 +360,7 @@ async fn process_bag_command(
     }
 
     // Show pagination info upfront if we have pagination parameters (before processing starts)
-    if !metadata && needs_pagination {
+    if needs_pagination {
         let offset_val = offset.unwrap_or(0);
         let limit_val = limit.unwrap_or(1);
         println!("## 📄 Pagination");
@@ -332,8 +385,8 @@ async fn process_bag_command(
         let _ = handler.await;
     }
 
-    // Show final pagination info if available and not showing metadata
-    if !metadata && needs_pagination {
+    // Show final pagination info if available
+    if needs_pagination {
         if let Some(pagination) = &pagination_info {
             println!("## ✅ Final Pagination");
             println!("- **Offset**: {}", pagination.offset);
@@ -359,15 +412,17 @@ async fn main() -> Result<()> {
     // Handle subcommands first
     if let Some(command) = args.command {
         match command {
+            Commands::Info { bag, definitions } => {
+                return info_command(bag, definitions).await;
+            }
             Commands::ProcessBag {
                 bag,
-                metadata,
                 messages,
                 topics,
                 offset,
                 limit,
             } => {
-                return process_bag_command(bag, metadata, messages, topics, offset, limit).await;
+                return process_bag_command(bag, messages, topics, offset, limit).await;
             }
             Commands::FetchImage {
                 bag,
@@ -384,13 +439,12 @@ async fn main() -> Result<()> {
     // Default behavior: process bag using top-level arguments
     let bag_path = args.bag.ok_or_else(|| {
         rosbag_msgs::RosbagError::MessageParsingError(
-            "Bag file path is required. Use --bag <path> or process-bag subcommand.".to_string(),
+            "Bag file path is required. Use --bag <path> or a subcommand.".to_string(),
         )
     })?;
 
     process_bag_command(
         bag_path,
-        args.metadata,
         args.messages,
         args.topics,
         args.offset,

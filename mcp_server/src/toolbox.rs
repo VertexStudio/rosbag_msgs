@@ -10,18 +10,27 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BagInfoRequest {
+    /// Absolute or relative path to the ROS bag file (.bag extension)
+    #[schemars(
+        description = "File path to the ROS bag file to inspect (e.g., 'data/race_1.bag', '/path/to/recording.bag')"
+    )]
+    pub bag: String,
+
+    /// Include detailed message type definitions in the output
+    #[schemars(
+        description = "Include complete message type definitions and field structures. When false, shows only topic names and message types."
+    )]
+    pub definitions: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ProcessRosbagRequest {
     /// Absolute or relative path to the ROS bag file (.bag extension)
     #[schemars(
         description = "File path to the ROS bag file to process (e.g., 'data/race_1.bag', '/path/to/recording.bag')"
     )]
     pub bag: String,
-
-    /// Extract bag file structure, message counts, and topic information without parsing message data
-    #[schemars(
-        description = "Return metadata including topic structure, message type definitions, and statistics. Useful for understanding bag contents before processing."
-    )]
-    pub metadata: Option<bool>,
 
     /// Filter and extract specific ROS message types (e.g., sensor data, navigation data)
     #[schemars(
@@ -115,7 +124,9 @@ pub struct MetadataResponse {
 struct BagMetadata {
     topics: HashMap<String, String>, // topic -> message_type
     message_types: HashSet<String>,  // unique message types
-    full_metadata: String,           // complete metadata output
+    stats_output: String,            // processing statistics
+    topic_list: Vec<String>,         // formatted topic: message_type lines
+    definitions: Vec<String>,        // formatted message definitions
 }
 
 #[derive(Clone)]
@@ -169,7 +180,8 @@ impl Toolbox {
 
         // Spawn task to collect metadata
         let metadata_task = tokio::spawn(async move {
-            let mut connection_lines = Vec::new();
+            let mut topic_list = Vec::new();
+            let mut definitions = Vec::new();
             let mut stats_lines = Vec::new();
             let mut discovered_topics = HashMap::new();
             let mut discovered_types = HashSet::new();
@@ -179,7 +191,8 @@ impl Toolbox {
                     MetadataEvent::ConnectionDiscovered(conn) => {
                         discovered_topics.insert(conn.topic.clone(), conn.message_type.to_string());
                         discovered_types.insert(conn.message_type.to_string());
-                        connection_lines.push(conn.format_structure());
+                        topic_list.push(conn.format_basic());
+                        definitions.push(conn.format_definition());
                     }
                     MetadataEvent::ProcessingStarted => {
                         // Don't include processing started message
@@ -190,21 +203,12 @@ impl Toolbox {
                 }
             }
 
-            // Combine stats first, then connections
-            let mut metadata_lines = Vec::new();
-            let stats_empty = stats_lines.is_empty();
-            let connections_empty = connection_lines.is_empty();
-
-            metadata_lines.extend(stats_lines);
-            if !stats_empty && !connections_empty {
-                metadata_lines.push("".to_string()); // Empty line separator
-            }
-            metadata_lines.extend(connection_lines);
-
             (
                 discovered_topics,
                 discovered_types,
-                metadata_lines.join("\\n"),
+                stats_lines.join(""),
+                topic_list,
+                definitions,
             )
         });
 
@@ -214,13 +218,59 @@ impl Toolbox {
             .await?;
 
         // Collect results
-        let (discovered_topics, discovered_types, metadata_string) = metadata_task.await?;
+        let (discovered_topics, discovered_types, stats_output, topic_list, definitions) =
+            metadata_task.await?;
 
         Ok(BagMetadata {
             topics: discovered_topics,
             message_types: discovered_types,
-            full_metadata: metadata_string,
+            stats_output,
+            topic_list,
+            definitions,
         })
+    }
+
+    #[tool(description = include_str!("descriptions/bag_info.md"))]
+    async fn bag_info(
+        &self,
+        #[tool(aggr)] BagInfoRequest { bag, definitions }: BagInfoRequest,
+    ) -> Result<CallToolResult, McpError> {
+        let bag_path = PathBuf::from(bag);
+
+        // Extract metadata using the existing function
+        match self.extract_bag_metadata(&bag_path).await {
+            Ok(metadata) => {
+                let show_definitions = definitions.unwrap_or(false);
+
+                let mut output_lines = Vec::new();
+
+                // Add stats
+                if !metadata.stats_output.is_empty() {
+                    output_lines.push(metadata.stats_output);
+                    output_lines.push("".to_string());
+                }
+
+                // Add topics section
+                output_lines.push("Topics and message types:".to_string());
+                for topic_line in &metadata.topic_list {
+                    output_lines.push(format!("  {}", topic_line));
+                }
+
+                if show_definitions {
+                    // Add definitions section
+                    output_lines.push("".to_string());
+                    output_lines.push("Message definitions:\n".to_string());
+                    output_lines.extend(metadata.definitions);
+
+                    let full_info = output_lines.join("\n");
+                    self.handle_large_output(full_info, "bag_info").await
+                } else {
+                    let basic_info = output_lines.join("\n");
+                    Ok(CallToolResult::success(vec![Content::text(basic_info)]))
+                }
+            }
+            Err(_e) => Err(McpError::internal_error("Failed to extract bag info", None)),
+        }
     }
 
     #[tool(description = include_str!("descriptions/process_rosbag.md"))]
@@ -228,63 +278,19 @@ impl Toolbox {
         &self,
         #[tool(aggr)] ProcessRosbagRequest {
             bag,
-            metadata,
             messages,
             topics,
             offset,
             limit,
         }: ProcessRosbagRequest,
     ) -> Result<CallToolResult, McpError> {
-        use rosbag_msgs::{BagProcessor, MessageLog, MetadataEvent};
+        use rosbag_msgs::{BagProcessor, MessageLog};
         use tokio::sync::mpsc;
 
         let bag_path = PathBuf::from(bag);
         let mut processor = BagProcessor::new(bag_path);
 
         let mut output_lines = Vec::new();
-
-        // Setup metadata channel if requested
-        let (metadata_sender, metadata_handler) = if metadata.unwrap_or(false) {
-            let (sender, mut receiver) = mpsc::channel::<MetadataEvent>(100);
-
-            // Spawn task to handle metadata events
-            let output_lines_clone = Arc::new(Mutex::new(Vec::new()));
-            let output_lines_ref = output_lines_clone.clone();
-
-            let handler = tokio::spawn(async move {
-                let mut connection_lines = Vec::new();
-                let mut stats_lines = Vec::new();
-
-                while let Some(event) = receiver.recv().await {
-                    match event {
-                        MetadataEvent::ConnectionDiscovered(conn) => {
-                            connection_lines.push(conn.format_structure());
-                        }
-                        MetadataEvent::ProcessingStarted => {
-                            // Don't include processing started message
-                        }
-                        MetadataEvent::ProcessingCompleted(stats) => {
-                            stats_lines.push(stats.format_summary());
-                        }
-                    }
-                }
-
-                // Include metadata output
-                let mut lines = output_lines_ref.lock().await;
-                let stats_empty = stats_lines.is_empty();
-                let connections_empty = connection_lines.is_empty();
-
-                lines.extend(stats_lines);
-                if !stats_empty && !connections_empty {
-                    lines.push("".to_string()); // Empty line separator
-                }
-                lines.extend(connection_lines);
-            });
-
-            (Some(sender), Some((handler, output_lines_clone)))
-        } else {
-            (None, None)
-        };
 
         // Setup message handlers
         let mut handlers = Vec::new();
@@ -353,9 +359,7 @@ impl Toolbox {
         }
 
         // Process the bag file
-        let process_result = processor
-            .process_bag(metadata_sender, offset, limit, None, None)
-            .await;
+        let process_result = processor.process_bag(None, offset, limit, None, None).await;
 
         let pagination_info = match &process_result {
             Ok(pagination) => pagination.clone(),
@@ -368,13 +372,6 @@ impl Toolbox {
             let lines = output_lines_ref.lock().await;
             output_lines.extend(lines.clone());
         }
-
-        // Collect metadata output if available
-        if let Some((metadata_handler, metadata_output_ref)) = metadata_handler {
-            let _ = metadata_handler.await;
-            let metadata_lines = metadata_output_ref.lock().await;
-            output_lines.extend(metadata_lines.clone());
-        };
 
         match process_result {
             Ok(_) => {
@@ -729,7 +726,17 @@ impl ServerHandler for Toolbox {
                             let metadata_response = MetadataResponse {
                                 topics: metadata.topics,
                                 message_types: metadata.message_types.into_iter().collect(),
-                                metadata_text: metadata.full_metadata,
+                                metadata_text: format!(
+                                    "{}\n\nTopics and message types:\n{}\n\nMessage definitions:\n{}",
+                                    metadata.stats_output,
+                                    metadata
+                                        .topic_list
+                                        .iter()
+                                        .map(|t| format!("  {}", t))
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                    metadata.definitions.join("\n")
+                                ),
                             };
                             serde_json::to_string_pretty(&metadata_response).map_err(|_| {
                                 McpError::internal_error("Failed to serialize metadata", None)
