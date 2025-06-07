@@ -50,6 +50,28 @@ cargo run -- info --bag data/race_1.bag --definitions
 Output format:
 
 ```
+Processing completed!
+Total messages: 12213
+Message counts by type:
+  sensor_msgs/Imu: 5679
+  nav_msgs/Odometry: 5679
+  sensor_msgs/Image: 855
+Message counts by topic:
+  /camera/imu: 5679
+  /camera/odom/sample: 5679
+  /camera/fisheye2/image_raw: 855
+
+Topics and message types:
+  /camera/imu: sensor_msgs/Imu
+  /camera/odom/sample: nav_msgs/Odometry
+  /camera/fisheye2/image_raw: sensor_msgs/Image
+```
+
+When using `--definitions`, detailed message type structures are also shown:
+
+```
+Message definitions:
+
 topic: /camera/imu
 type: sensor_msgs/Imu
         |      header: std_msgs/Header Unit
@@ -72,20 +94,7 @@ type: sensor_msgs/Imu
         |      x: float64 Unit
         |      y: float64 Unit
         |      z: float64 Unit
-....................................................................................................
-Processing completed!
-Total messages: 12213
-Message counts by type:
-  sensor_msgs/Imu: 5679
-  nav_msgs/Odometry: 5679
-  sensor_msgs/Image: 855
-Message counts by topic:
-  /camera/imu: 5679
-  /camera/odom/sample: 5679
-  /camera/fisheye2/image_raw: 855
 ```
-
-Metadata-only mode scans and counts all messages but skips parsing for faster execution.
 
 ### Message Type Filtering
 
@@ -93,13 +102,13 @@ Extract and process specific message types:
 
 ```bash
 # Single message type
-cargo run -- --bag data/race_1.bag --messages "sensor_msgs/Imu"
+cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Imu"
 
 # Multiple message types
-cargo run -- --bag data/race_1.bag --messages "sensor_msgs/Imu,nav_msgs/Odometry"
+cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Imu,nav_msgs/Odometry"
 
-# Combine with metadata
-cargo run -- --bag data/race_1.bag --metadata --messages "sensor_msgs/Imu"
+# With pagination
+cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Imu" --limit 5
 ```
 
 ### Topic Filtering
@@ -108,13 +117,13 @@ Filter by topic names:
 
 ```bash
 # Single topic
-cargo run -- --bag data/race_1.bag --topics "/camera/imu"
+cargo run -- messages --bag data/race_1.bag --topics "/camera/imu"
 
 # Multiple topics
-cargo run -- --bag data/race_1.bag --topics "/camera/imu,/camera/odom/sample"
+cargo run -- messages --bag data/race_1.bag --topics "/camera/imu,/camera/odom/sample"
 
-# Combine with metadata
-cargo run -- --bag data/race_1.bag --metadata --topics "/camera/imu"
+# With pagination
+cargo run -- messages --bag data/race_1.bag --topics "/camera/imu" --offset 10 --limit 5
 ```
 
 ### Combined Filtering
@@ -123,62 +132,68 @@ Mix message type and topic filters:
 
 ```bash
 # Process specific message types AND specific topics
-cargo run -- --bag data/race_1.bag --messages "sensor_msgs/Image" --topics "/camera/imu"
+cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Image" --topics "/camera/imu"
 
-# Metadata with selective processing
-cargo run -- --bag data/race_1.bag --metadata --messages "sensor_msgs/Imu" --topics "/camera/odom/sample"
+# With pagination for performance
+cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Imu" --topics "/camera/odom/sample" --limit 10
 ```
 
-### Temporal Filtering
+### Pagination
 
-Filter messages by time range using `--start` and `--duration` options:
+Process large datasets in manageable chunks using pagination:
 
 ```bash
-# Process first 5 seconds of the bag
-cargo run -- --bag data/race_1.bag --topics "/camera/imu" --duration 5
+# First 5 messages from a topic
+cargo run -- messages --bag data/race_1.bag --topics "/camera/imu" --limit 5
 
-# Skip first 10 seconds, then process next 5 seconds
-cargo run -- --bag data/race_1.bag --topics "/camera/imu" --start 10 --duration 5
+# Skip first 10 messages, get next 5
+cargo run -- messages --bag data/race_1.bag --topics "/camera/imu" --offset 10 --limit 5
 
-# Process from 15 seconds to end of bag
-cargo run -- --bag data/race_1.bag --topics "/camera/imu" --start 15
-
-# Combine with metadata to see impact on processing stats
-cargo run -- --bag data/race_1.bag --metadata --start 5 --duration 10
-
-# Fractional seconds and multiple topics
-cargo run -- --bag data/race_1.bag --topics "/camera/imu,/camera/odom/sample" --start 2.5 --duration 0.5
+# Page through IMU data  
+cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Imu" --offset 0 --limit 10
+cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Imu" --offset 10 --limit 10
 ```
 
-**Time parameters:**
-- `--start <seconds>`: Start time offset from bag beginning (optional)
-- `--duration <seconds>`: Duration from start time (optional)
-- Times are relative to the first message timestamp in the bag
-- Both parameters accept decimal values (e.g., `--start 2.5`)
-- Works with all other filters (message types, topics, max limits)
-- Processing stats show filtered vs. total message counts
+**Pagination parameters:**
+- `--offset <N>`: Skip N messages before processing (defaults to 0)
+- `--limit <N>`: Maximum messages to process (defaults to 1)
+- Works with all filters (message types, topics)
+- Pagination info shows actual results for navigation
 
-**Example output with temporal filtering:**
+**Example output with pagination:**
 ```
-Processing completed!
-Total messages: 12213
-Total processed: 981
-Processing time: 45ms
-Bag duration: 28.492s
-Bag start time: 1654544051.367208004
-Bag end time: 1654544079.859084368
-Message counts by topic:
-  /camera/imu: 5679
+Pagination: Offset: 10 | Limit: 2 | Returned: 2 | Total: 5679
+
+
+sensor_msgs/Imu [1] `/camera/imu`
+
+- header: 
+  - seq: 10
+  - stamp: 1654544051.511655331s
+  - frame_id: "camera_imu_optical_frame"
+- orientation: 
+  - x: 0.000
+  - y: 0.000
+  - z: 0.000
+  - w: 0.000
+- angular_velocity: 
+  - x: 0.001
+  - y: -0.004
+  - z: -0.002
+- linear_acceleration: 
+  - x: -0.134
+  - y: 8.682
+  - z: 3.939
 ```
-Shows 981 processed out of 12,213 total messages using `--duration 5`.
+Shows messages 11-12 out of 5,679 total IMU messages.
 
 ### Processing Modes
 
-The CLI optimizes automatically:
+The CLI provides different analysis modes:
 
-- **Metadata-only** (`--metadata` alone): Scans connections and counts messages, skips parsing
-- **Selective processing** (with filters): Only processes matching messages
-- **Full processing** (no filters): Processes entire bag file
+- **Bag info** (`info` command): Shows bag structure, topics, message counts, and optional message definitions
+- **Selective processing** (with filters): Only processes matching message types or topics
+- **Paginated processing** (with offset/limit): Process large datasets in chunks
 
 ### Debug Output
 
@@ -186,10 +201,10 @@ Enable logging for development:
 
 ```bash
 # Library debug logs
-RUST_LOG=debug cargo run -- --bag data/race_1.bag --metadata
+RUST_LOG=debug cargo run -- info --bag data/race_1.bag
 
 # Verbose per-message traces
-RUST_LOG=trace cargo run -- --bag data/race_1.bag --messages "sensor_msgs/Imu"
+RUST_LOG=trace cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Imu"
 ```
 
 ## Library Usage
@@ -300,13 +315,13 @@ async fn main() -> Result<()> {
     });
     
     // Process with metadata reporting
-    processor.process_bag(Some(meta_sender), None, None, None).await?;
+    processor.process_bag(Some(meta_sender), None, None, None, None).await?;
     meta_handler.await.unwrap();
     Ok(())
 }
 ```
 
-### Temporal Filtering
+### Pagination Processing
 
 ```rust
 use rosbag_msgs::{BagProcessor, MessageLog, Result};
@@ -325,8 +340,11 @@ async fn main() -> Result<()> {
         }
     });
     
-    // Process only messages from 10s to 15s (5-second window)
-    processor.process_bag(None, None, Some(10.0), Some(5.0)).await?;
+    // Process messages with pagination: skip first 10, get next 5
+    let pagination = processor.process_bag(None, Some(10), Some(5), None, None).await?;
+    if let Some(info) = pagination {
+        println!("Processed {} of {} messages", info.returned_count, info.total);
+    }
     handler.await.unwrap();
     Ok(())
 }
@@ -421,11 +439,12 @@ cargo run -p rosbag_mcp_server -- toolbox
 
 ### MCP Features
 
-#### Tool: `process_rosbag`
-Main tool with all CLI functionality:
-- **Parameter-based filtering**: Same filtering options as CLI (`messages`, `topics`, `metadata`, etc.)
-- **Temporal analysis**: Time-windowed extraction with `start` and `duration`
-- **Output control**: Sampling with `max` parameter
+#### Tools: `bag_info`, `messages`, `images`
+Three main tools matching CLI functionality:
+- **`bag_info`**: Bag structure inspection with optional message definitions
+- **`messages`**: Message extraction with filtering and pagination 
+- **`images`**: Image extraction and base64 encoding for AI analysis
+- **Parameter-based filtering**: Same filtering options as CLI (`messages`, `topics`, `offset`, `limit`)
 - **JSON output**: Structured data for downstream processing
 
 #### Dynamic Resources
@@ -453,10 +472,9 @@ Context-aware prompts for common workflows:
 #### Basic Discovery
 ```json
 {
-  "tool": "process_rosbag",
+  "tool": "bag_info",
   "parameters": {
-    "bag": "data/race_1.bag",
-    "metadata": true
+    "bag": "data/race_1.bag"
   }
 }
 ```
@@ -465,11 +483,11 @@ Returns: Topic structure, message types, counts, bag duration
 #### Sensor Data Extraction
 ```json
 {
-  "tool": "process_rosbag", 
+  "tool": "messages", 
   "parameters": {
     "bag": "data/race_1.bag",
     "messages": ["sensor_msgs/Imu"],
-    "max": 50
+    "limit": 50
   }
 }
 ```
@@ -478,30 +496,42 @@ Returns: 50 IMU readings with orientation, angular velocity, acceleration
 #### Multi-sensor Fusion Analysis
 ```json
 {
-  "tool": "process_rosbag",
+  "tool": "messages",
   "parameters": {
     "bag": "data/race_1.bag", 
     "messages": ["sensor_msgs/Imu", "nav_msgs/Odometry"],
-    "start": 10.0,
-    "duration": 5.0
+    "offset": 100,
+    "limit": 10
   }
 }
 ```
-Returns: IMU and odometry data from 10-15 second window
+Returns: 10 IMU and odometry messages starting from offset 100
 
-#### Event Analysis
+#### Topic-Based Analysis
 ```json
 {
-  "tool": "process_rosbag",
+  "tool": "messages",
   "parameters": {
     "bag": "data/race_1.bag",
     "topics": ["/cmd_vel", "/odom"], 
-    "start": 25.5,
-    "duration": 2.0
+    "limit": 20
   }
 }
 ```
-Returns: Commands and odometry during 2-second event
+Returns: First 20 messages from command and odometry topics
+
+#### Image Extraction
+```json
+{
+  "tool": "images",
+  "parameters": {
+    "bag": "data/race_1.bag",
+    "topic": "/camera/fisheye2/image_raw",
+    "offset": 10
+  }
+}
+```
+Returns: 11th image from camera topic as base64 PNG
 
 ### Integration
 
