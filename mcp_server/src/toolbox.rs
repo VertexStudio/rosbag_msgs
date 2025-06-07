@@ -315,7 +315,7 @@ impl Toolbox {
                         message_count += 1;
                         let mut lines = output_lines_ref.lock().await;
                         lines.push(format!(
-                            "## 📨 {} #{} `{}`",
+                            "\n{} [{}] `{}`",
                             msg_type_clone, message_count, msg.topic
                         ));
                         lines.push(rosbag_msgs::format_value_as_markdown(&msg.data, 0));
@@ -347,7 +347,7 @@ impl Toolbox {
                         message_count += 1;
                         let mut lines = output_lines_ref.lock().await;
                         lines.push(format!(
-                            "## 🔗 {} #{} `{}`",
+                            "\n{} [{}] `{}`",
                             msg.msg_path, message_count, topic_clone
                         ));
                         lines.push(rosbag_msgs::format_value_as_markdown(&msg.data, 0));

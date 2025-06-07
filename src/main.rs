@@ -320,7 +320,7 @@ async fn process_bag_command(
                 message_count += 1;
                 let mut messages = messages_ref.lock().await;
                 messages.push((
-                    format!("📨 {} #{} `{}`", msg_type_clone, message_count, msg.topic),
+                    format!("\n{} [{}] `{}`", msg_type_clone, message_count, msg.topic),
                     msg,
                 ));
             }
@@ -347,7 +347,7 @@ async fn process_bag_command(
                 message_count += 1;
                 let mut messages = messages_ref.lock().await;
                 messages.push((
-                    format!("🔗 {} #{} `{}`", msg.msg_path, message_count, topic_clone),
+                    format!("\n{} [{}] `{}`", msg.msg_path, message_count, topic_clone),
                     msg,
                 ));
             }
@@ -389,7 +389,7 @@ async fn process_bag_command(
     // Now print all collected messages
     let messages = all_messages.lock().await;
     for (header, msg) in messages.iter() {
-        println!("## {}", header);
+        println!("{}", header);
         println!("{}", format_value_as_markdown(&msg.data, 0));
     }
 
