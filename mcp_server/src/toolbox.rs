@@ -539,7 +539,7 @@ impl Toolbox {
     ) -> Result<ReadResourceResult, McpError> {
         use rosbag_msgs::{BagProcessor, MessageLog};
         use tokio::sync::mpsc;
-        
+
         let bag_path_buf = PathBuf::from(bag_path);
         if !bag_path_buf.exists() {
             return Err(McpError::invalid_params("Bag file not found", None));
@@ -700,10 +700,13 @@ impl ServerHandler for Toolbox {
                 .unwrap()
                 .captures(&uri)
         {
-            let bag_path = captures.get(1).unwrap().as_str();
+            let bag_path_encoded = captures.get(1).unwrap().as_str();
             let resource_type = captures.get(2).unwrap().as_str();
 
-            let bag_path_buf = PathBuf::from(bag_path);
+            // URL decode the bag path
+            let bag_path = urlencoding::decode(bag_path_encoded)
+                .map_err(|_| McpError::invalid_params("Invalid URL encoding in bag path", None))?;
+            let bag_path_buf = PathBuf::from(bag_path.as_ref());
             if !bag_path_buf.exists() {
                 return Err(McpError::invalid_params("Bag file not found", None));
             }
@@ -748,9 +751,16 @@ impl ServerHandler for Toolbox {
                 .unwrap()
                 .captures(&uri)
         {
-            let bag_path = captures.get(1).unwrap().as_str();
-            let message_type = captures.get(2).unwrap().as_str();
+            let bag_path_encoded = captures.get(1).unwrap().as_str();
+            let message_type_encoded = captures.get(2).unwrap().as_str();
             let query_params = captures.get(3).map(|m| m.as_str()).unwrap_or("");
+
+            // URL decode the bag path and message type
+            let bag_path = urlencoding::decode(bag_path_encoded)
+                .map_err(|_| McpError::invalid_params("Invalid URL encoding in bag path", None))?;
+            let message_type = urlencoding::decode(message_type_encoded).map_err(|_| {
+                McpError::invalid_params("Invalid URL encoding in message type", None)
+            })?;
 
             // Parse query parameters
             let mut offset = None;
@@ -765,7 +775,7 @@ impl ServerHandler for Toolbox {
                 }
             }
 
-            self.get_messages_resource(bag_path, Some(message_type), None, offset, limit)
+            self.get_messages_resource(&bag_path, Some(&message_type), None, offset, limit)
                 .await
         }
         // 3. Messages by topic with pagination: rosbag://{bag_path}/topics/{topic_name}?offset=X&limit=Y
@@ -774,9 +784,16 @@ impl ServerHandler for Toolbox {
                 .unwrap()
                 .captures(&uri)
         {
-            let bag_path = captures.get(1).unwrap().as_str();
-            let topic_name = captures.get(2).unwrap().as_str();
+            let bag_path_encoded = captures.get(1).unwrap().as_str();
+            let topic_name_encoded = captures.get(2).unwrap().as_str();
             let query_params = captures.get(3).map(|m| m.as_str()).unwrap_or("");
+
+            // URL decode the bag path and topic name
+            let bag_path = urlencoding::decode(bag_path_encoded)
+                .map_err(|_| McpError::invalid_params("Invalid URL encoding in bag path", None))?;
+            let topic_name = urlencoding::decode(topic_name_encoded).map_err(|_| {
+                McpError::invalid_params("Invalid URL encoding in topic name", None)
+            })?;
 
             // Parse query parameters
             let mut offset = None;
@@ -791,7 +808,7 @@ impl ServerHandler for Toolbox {
                 }
             }
 
-            self.get_messages_resource(bag_path, None, Some(topic_name), offset, limit)
+            self.get_messages_resource(&bag_path, None, Some(&topic_name), offset, limit)
                 .await
         } else if uri == "rosbag://usage" {
             let usage_text = r#"Dynamic ROS Bag Resources Usage:

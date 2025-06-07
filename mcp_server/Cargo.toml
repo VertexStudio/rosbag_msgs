@@ -14,6 +14,7 @@ rosbag_msgs = { path = ".." }
 regex = "1.0"
 base64 = "0.22"
 image = { version = "0.25", features = ["png", "jpeg"] }
+urlencoding = "2.1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
