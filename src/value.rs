@@ -6,7 +6,7 @@ pub fn format_value_as_markdown(value: &Value, indent: usize) -> String {
     let prefix = "  ".repeat(indent);
 
     match value {
-        Value::Bool(b) => format!("**{}**", if *b { "✓" } else { "✗" }),
+        Value::Bool(b) => format!("{}", if *b { "✓" } else { "✗" }),
         Value::I8(n) => n.to_string(),
         Value::I16(n) => n.to_string(),
         Value::I32(n) => n.to_string(),
@@ -18,8 +18,8 @@ pub fn format_value_as_markdown(value: &Value, indent: usize) -> String {
         Value::F32(n) => format!("{:.3}", n),
         Value::F64(n) => format!("{:.3}", n),
         Value::String(s) => format!("\"{}\"", s),
-        Value::Time(t) => format!("⏰ {}.{:09}s", t.sec, t.nsec),
-        Value::Duration(d) => format!("⏱️ {}.{:09}s", d.sec, d.nsec),
+        Value::Time(t) => format!("{}.{:09}s", t.sec, t.nsec),
+        Value::Duration(d) => format!("{}.{:09}s", d.sec, d.nsec),
         Value::Array(arr) => {
             if arr.is_empty() {
                 "[]".to_string()
@@ -30,7 +30,7 @@ pub fn format_value_as_markdown(value: &Value, indent: usize) -> String {
                 format!("[{}]", items.join(", "))
             } else {
                 // Long arrays as list
-                format!("📊 [{} items]", arr.len())
+                format!("[{} items]", arr.len())
             }
         }
         Value::Message(map) => {
@@ -40,7 +40,7 @@ pub fn format_value_as_markdown(value: &Value, indent: usize) -> String {
                 let mut result = String::new();
                 for (key, val) in map {
                     result.push_str(&format!(
-                        "\n{}- **{}**: {}",
+                        "\n{}- {}: {}",
                         prefix,
                         key,
                         format_value_as_markdown(val, indent + 1)

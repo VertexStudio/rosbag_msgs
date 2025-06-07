@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,6 +73,42 @@ pub struct FetchImageRequest {
         description = "Optional path to nested image data (e.g., ['visual_metadata', 0, 'image_chip', 0] for first image in array). If not specified, tries to find image data at the root level."
     )]
     pub image_path: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaginationInfo {
+    pub offset: usize,
+    pub limit: usize,
+    pub returned_count: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MessageData {
+    pub time: u64,
+    pub topic: String,
+    pub message_type: String,
+    pub data: rosbag_msgs::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MessagesResponse {
+    pub pagination: Option<PaginationInfo>,
+    pub messages: Vec<MessageData>,
+    pub filter: MessageFilter,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MessageFilter {
+    pub message_type: Option<String>,
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MetadataResponse {
+    pub topics: HashMap<String, String>,
+    pub message_types: Vec<String>,
+    pub metadata_text: String,
 }
 
 #[derive(Debug)]
@@ -472,7 +508,7 @@ impl Toolbox {
                             Some(serde_json::json!({
                                 "topic": topic,
                                 "message_type": image_msg.msg_path,
-                                "error": e
+                                "error": e.to_string()
                             })),
                         )),
                     }
@@ -488,6 +524,134 @@ impl Toolbox {
                         })),
                     ))
                 }
+            }
+            Err(_e) => Err(McpError::internal_error("Failed to process bag file", None)),
+        }
+    }
+
+    async fn get_messages_resource(
+        &self,
+        bag_path: &str,
+        message_type: Option<&str>,
+        topic_name: Option<&str>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<ReadResourceResult, McpError> {
+        use rosbag_msgs::{BagProcessor, MessageLog};
+        use tokio::sync::mpsc;
+        
+        let bag_path_buf = PathBuf::from(bag_path);
+        if !bag_path_buf.exists() {
+            return Err(McpError::invalid_params("Bag file not found", None));
+        }
+
+        let mut processor = BagProcessor::new(bag_path_buf);
+
+        // Setup message collection
+        let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
+
+        // Register handler based on filter type
+        if let Some(msg_type) = message_type {
+            if let Err(_e) = processor.register_message(msg_type, sender) {
+                return Err(McpError::invalid_params(
+                    "Failed to register message type handler",
+                    Some(serde_json::json!({"message_type": msg_type})),
+                ));
+            }
+        } else if let Some(topic) = topic_name {
+            if let Err(_e) = processor.register_topic(topic, sender) {
+                return Err(McpError::invalid_params(
+                    "Failed to register topic handler",
+                    Some(serde_json::json!({"topic": topic})),
+                ));
+            }
+        } else {
+            return Err(McpError::invalid_params(
+                "Either message_type or topic_name must be specified",
+                None,
+            ));
+        }
+
+        // Collect messages
+        let messages_collected = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let messages_ref = messages_collected.clone();
+
+        let handler = tokio::spawn(async move {
+            while let Some(msg) = receiver.recv().await {
+                let mut messages = messages_ref.lock().await;
+                messages.push(msg);
+            }
+        });
+
+        // Process the bag file with pagination
+        let process_result = processor.process_bag(None, offset, limit, None, None).await;
+
+        let pagination_info = match &process_result {
+            Ok(pagination) => pagination.clone(),
+            Err(_) => None,
+        };
+
+        // Wait for handler to finish
+        let _ = handler.await;
+
+        match process_result {
+            Ok(_) => {
+                let messages = messages_collected.lock().await;
+
+                // Convert messages to proper types
+                let message_data: Vec<MessageData> = messages
+                    .iter()
+                    .map(|msg| MessageData {
+                        time: msg.time,
+                        topic: msg.topic.clone(),
+                        message_type: msg.msg_path.to_string(),
+                        data: msg.data.clone(),
+                    })
+                    .collect();
+
+                // Create response with pagination metadata
+                let response_data = MessagesResponse {
+                    pagination: pagination_info.map(|p| PaginationInfo {
+                        offset: p.offset,
+                        limit: p.limit,
+                        returned_count: p.returned_count,
+                        total: p.total,
+                    }),
+                    messages: message_data,
+                    filter: MessageFilter {
+                        message_type: message_type.map(|s| s.to_string()),
+                        topic: topic_name.map(|s| s.to_string()),
+                    },
+                };
+
+                let content = serde_json::to_string_pretty(&response_data).map_err(|_| {
+                    McpError::internal_error("Failed to serialize message data", None)
+                })?;
+
+                Ok(ReadResourceResult {
+                    contents: vec![ResourceContents::text(
+                        content,
+                        format!(
+                            "rosbag://{}/{}{}{}",
+                            bag_path,
+                            if message_type.is_some() {
+                                "messages/"
+                            } else {
+                                "topics/"
+                            },
+                            message_type.or(topic_name).unwrap_or(""),
+                            if offset.is_some() || limit.is_some() {
+                                format!(
+                                    "?offset={}&limit={}",
+                                    offset.unwrap_or(0),
+                                    limit.unwrap_or(1)
+                                )
+                            } else {
+                                String::new()
+                            }
+                        ),
+                    )],
+                })
             }
             Err(_e) => Err(McpError::internal_error("Failed to process bag file", None)),
         }
@@ -528,16 +692,17 @@ impl ServerHandler for Toolbox {
         ReadResourceRequestParam { uri }: ReadResourceRequestParam,
         _: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
-        // Parse URI format: rosbag://{bag_path}/{resource_type}
+        // Parse different URI patterns
+
+        // 1. Basic metadata resources: rosbag://{bag_path}/{resource_type}
         if let Some(captures) =
-            regex::Regex::new(r"^rosbag://(.+)/(topics|message_types|metadata)$")
+            regex::Regex::new(r"^rosbag://(.+?)/(topics|message_types|metadata)$")
                 .unwrap()
                 .captures(&uri)
         {
             let bag_path = captures.get(1).unwrap().as_str();
             let resource_type = captures.get(2).unwrap().as_str();
 
-            // Process the bag file to extract metadata
             let bag_path_buf = PathBuf::from(bag_path);
             if !bag_path_buf.exists() {
                 return Err(McpError::invalid_params("Bag file not found", None));
@@ -547,22 +712,25 @@ impl ServerHandler for Toolbox {
                 Ok(metadata) => {
                     let content = match resource_type {
                         "topics" => {
-                            let mut topics_list = String::from("Topics in bag file:\\n");
-                            for (topic, msg_type) in &metadata.topics {
-                                topics_list.push_str(&format!("{} - {}\\n", topic, msg_type));
-                            }
-                            topics_list
+                            serde_json::to_string_pretty(&metadata.topics).map_err(|_| {
+                                McpError::internal_error("Failed to serialize topics", None)
+                            })?
                         }
                         "message_types" => {
-                            let mut types_list = String::from("Message types in bag file:\\n");
-                            for msg_type in &metadata.message_types {
-                                types_list.push_str(&format!("{}\\n", msg_type));
-                            }
-                            types_list
+                            let types_vec: Vec<&String> = metadata.message_types.iter().collect();
+                            serde_json::to_string_pretty(&types_vec).map_err(|_| {
+                                McpError::internal_error("Failed to serialize message types", None)
+                            })?
                         }
                         "metadata" => {
-                            // Handle potentially large metadata using library function
-                            rosbag_msgs::handle_large_output(metadata.full_metadata, "metadata")
+                            let metadata_response = MetadataResponse {
+                                topics: metadata.topics,
+                                message_types: metadata.message_types.into_iter().collect(),
+                                metadata_text: metadata.full_metadata,
+                            };
+                            serde_json::to_string_pretty(&metadata_response).map_err(|_| {
+                                McpError::internal_error("Failed to serialize metadata", None)
+                            })?
                         }
                         _ => unreachable!(),
                     };
@@ -573,6 +741,58 @@ impl ServerHandler for Toolbox {
                 }
                 Err(_e) => Err(McpError::internal_error("Failed to process bag file", None)),
             }
+        }
+        // 2. Messages by type with pagination: rosbag://{bag_path}/messages/{message_type}?offset=X&limit=Y
+        else if let Some(captures) =
+            regex::Regex::new(r"^rosbag://(.+?)/messages/([^?]+)(?:\?(.+))?$")
+                .unwrap()
+                .captures(&uri)
+        {
+            let bag_path = captures.get(1).unwrap().as_str();
+            let message_type = captures.get(2).unwrap().as_str();
+            let query_params = captures.get(3).map(|m| m.as_str()).unwrap_or("");
+
+            // Parse query parameters
+            let mut offset = None;
+            let mut limit = None;
+            for param in query_params.split('&') {
+                if let Some((key, value)) = param.split_once('=') {
+                    match key {
+                        "offset" => offset = value.parse().ok(),
+                        "limit" => limit = value.parse().ok(),
+                        _ => {}
+                    }
+                }
+            }
+
+            self.get_messages_resource(bag_path, Some(message_type), None, offset, limit)
+                .await
+        }
+        // 3. Messages by topic with pagination: rosbag://{bag_path}/topics/{topic_name}?offset=X&limit=Y
+        else if let Some(captures) =
+            regex::Regex::new(r"^rosbag://(.+?)/topics/([^?]+)(?:\?(.+))?$")
+                .unwrap()
+                .captures(&uri)
+        {
+            let bag_path = captures.get(1).unwrap().as_str();
+            let topic_name = captures.get(2).unwrap().as_str();
+            let query_params = captures.get(3).map(|m| m.as_str()).unwrap_or("");
+
+            // Parse query parameters
+            let mut offset = None;
+            let mut limit = None;
+            for param in query_params.split('&') {
+                if let Some((key, value)) = param.split_once('=') {
+                    match key {
+                        "offset" => offset = value.parse().ok(),
+                        "limit" => limit = value.parse().ok(),
+                        _ => {}
+                    }
+                }
+            }
+
+            self.get_messages_resource(bag_path, None, Some(topic_name), offset, limit)
+                .await
         } else if uri == "rosbag://usage" {
             let usage_text = r#"Dynamic ROS Bag Resources Usage:
 
@@ -580,22 +800,31 @@ Access bag file information using these URI patterns:
 • rosbag://{bag_path}/topics - List all topics in the bag file
 • rosbag://{bag_path}/message_types - List all message types in the bag file  
 • rosbag://{bag_path}/metadata - Complete metadata with structure and statistics
+• rosbag://{bag_path}/messages/{message_type}?offset=X&limit=Y - Messages of specific type with pagination
+• rosbag://{bag_path}/topics/{topic_name}?offset=X&limit=Y - Messages from specific topic with pagination
 
 Examples:
 • rosbag://data/race_1.bag/topics
 • rosbag:///absolute/path/to/recording.bag/message_types
 • rosbag://relative/path/bag.bag/metadata
+• rosbag://data/race_1.bag/messages/sensor_msgs/Imu?offset=0&limit=10
+• rosbag://data/race_1.bag/topics/camera/image_raw?offset=5&limit=3
 
-The bag file will be processed automatically to extract real metadata."#;
+The bag file will be processed automatically to extract real data."#;
 
             Ok(ReadResourceResult {
                 contents: vec![ResourceContents::text(usage_text, uri)],
             })
         } else {
             Err(McpError::resource_not_found(
-                "Invalid resource URI format. Use: rosbag://{bag_path}/{topics|message_types|metadata}",
+                "Invalid resource URI format",
                 Some(json!({
-                    "uri": uri
+                    "uri": uri,
+                    "supported_patterns": [
+                        "rosbag://{bag_path}/{topics|message_types|metadata}",
+                        "rosbag://{bag_path}/messages/{message_type}?offset=X&limit=Y",
+                        "rosbag://{bag_path}/topics/{topic_name}?offset=X&limit=Y"
+                    ]
                 })),
             ))
         }
@@ -870,21 +1099,49 @@ The bag file will be processed automatically to extract real metadata."#;
                 RawResourceTemplate {
                     uri_template: "rosbag://{bag_path}/topics".to_string(),
                     name: "ROS Bag Topics".to_string(),
-                    description: Some("List of all topics in the specified ROS bag file".to_string()),
-                    mime_type: Some("text/plain".to_string()),
-                }.no_annotation(),
+                    description: Some("List of all topics with message types as JSON".to_string()),
+                    mime_type: Some("application/json".to_string()),
+                }
+                .no_annotation(),
                 RawResourceTemplate {
                     uri_template: "rosbag://{bag_path}/message_types".to_string(),
                     name: "ROS Bag Message Types".to_string(),
-                    description: Some("List of all message types found in the specified ROS bag file".to_string()),
-                    mime_type: Some("text/plain".to_string()),
-                }.no_annotation(),
+                    description: Some("List of all unique message types as JSON".to_string()),
+                    mime_type: Some("application/json".to_string()),
+                }
+                .no_annotation(),
                 RawResourceTemplate {
                     uri_template: "rosbag://{bag_path}/metadata".to_string(),
                     name: "ROS Bag Metadata".to_string(),
-                    description: Some("Complete metadata including topic structure and statistics for the specified ROS bag file".to_string()),
-                    mime_type: Some("text/plain".to_string()),
-                }.no_annotation(),
+                    description: Some(
+                        "Complete metadata including topic structure and statistics as JSON"
+                            .to_string(),
+                    ),
+                    mime_type: Some("application/json".to_string()),
+                }
+                .no_annotation(),
+                RawResourceTemplate {
+                    uri_template:
+                        "rosbag://{bag_path}/messages/{message_type}?offset={offset}&limit={limit}"
+                            .to_string(),
+                    name: "ROS Bag Messages by Type".to_string(),
+                    description: Some(
+                        "Messages of specific type with pagination as JSON".to_string(),
+                    ),
+                    mime_type: Some("application/json".to_string()),
+                }
+                .no_annotation(),
+                RawResourceTemplate {
+                    uri_template:
+                        "rosbag://{bag_path}/topics/{topic_name}?offset={offset}&limit={limit}"
+                            .to_string(),
+                    name: "ROS Bag Messages by Topic".to_string(),
+                    description: Some(
+                        "Messages from specific topic with pagination as JSON".to_string(),
+                    ),
+                    mime_type: Some("application/json".to_string()),
+                }
+                .no_annotation(),
             ],
         })
     }
