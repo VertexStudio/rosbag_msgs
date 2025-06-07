@@ -439,9 +439,9 @@ cargo run -p rosbag_mcp_server -- toolbox
 
 ### MCP Features
 
-#### Tools: `bag_info`, `messages`, `images`
+#### Tools: `info`, `messages`, `images`
 Three main tools matching CLI functionality:
-- **`bag_info`**: Bag structure inspection with optional message definitions
+- **`info`**: Bag structure inspection with optional message definitions
 - **`messages`**: Message extraction with filtering and pagination 
 - **`images`**: Image extraction and base64 encoding for AI analysis
 - **Parameter-based filtering**: Same filtering options as CLI (`messages`, `topics`, `offset`, `limit`)
@@ -472,7 +472,7 @@ Context-aware prompts for common workflows:
 #### Basic Discovery
 ```json
 {
-  "tool": "bag_info",
+  "tool": "info",
   "parameters": {
     "bag": "data/race_1.bag"
   }

@@ -1,6 +1,6 @@
-# Bag Info Tool
+# Info Tool
 
-Inspects ROS bag file structure and metadata, similar to the `rosbag info` command.
+Inspects ROS bag file structure and metadata, equivalent to the CLI `info` command and similar to `rosbag info`.
 
 ## Parameters
 - **bag**: Path to the ROS bag file (.bag extension)
@@ -13,10 +13,10 @@ Inspects ROS bag file structure and metadata, similar to the `rosbag info` comma
 ## Usage Examples
 ```
 # Basic bag info (topic summary)
-bag_info(bag="data/race_1.bag")
+info(bag="data/race_1.bag")
 
 # Detailed info with message definitions
-bag_info(bag="data/race_1.bag", definitions=true)
+info(bag="data/race_1.bag", definitions=true)
 ```
 
 This tool provides an overview of bag contents without processing actual message data, making it ideal for quick inspection and understanding of recorded data structure.

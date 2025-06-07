@@ -68,7 +68,7 @@ Returns: 5 sample images without overwhelming output
 
 ## Common Workflows
 
-1. **Discovery**: Use the `bag_info` tool first to see available topics and types
+1. **Discovery**: Use the `info` tool first to see available topics and types
 2. **Selection**: Use discovered types/topics with `messages` or `topics` parameters
 3. **Sampling**: Add `limit` to control output size (defaults to 1 message)
 4. **Pagination**: Use `offset`/`limit` for systematic processing of large datasets

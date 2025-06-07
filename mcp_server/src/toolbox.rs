@@ -230,8 +230,8 @@ impl Toolbox {
         })
     }
 
-    #[tool(description = include_str!("descriptions/bag_info.md"))]
-    async fn bag_info(
+    #[tool(description = include_str!("descriptions/info.md"))]
+    async fn info(
         &self,
         #[tool(aggr)] BagInfoRequest { bag, definitions }: BagInfoRequest,
     ) -> Result<CallToolResult, McpError> {
