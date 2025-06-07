@@ -85,8 +85,7 @@ When using offset/limit parameters, responses include pagination metadata:
 
 Example pagination response:
 ```
-Pagination:
-  Offset: 100 | Limit: 10 | Returned: 10 | Total: 5679
+Pagination: Offset: 100 | Limit: 10 | Returned: 10 | Total: 5679
 ```
 
 With this information you can calculate:

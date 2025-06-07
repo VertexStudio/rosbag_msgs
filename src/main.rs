@@ -89,13 +89,15 @@ async fn fetch_image_command(
                     ))
                 });
 
-                // Show pagination information first
+                // Show pagination information in single line format
                 if let Some(ref pagination) = pagination_info {
-                    println!("## 📄 Pagination");
-                    println!("- **Offset**: {}", pagination.offset);
-                    println!("- **Limit**: {}", pagination.limit);
-                    println!("- **Returned**: {}", pagination.returned_count);
-                    println!("- **Total**: {}", pagination.total);
+                    println!(
+                        "Pagination: Offset: {} | Limit: {} | Returned: {} | Total: {}",
+                        pagination.offset,
+                        pagination.limit,
+                        pagination.returned_count,
+                        pagination.total
+                    );
                     println!();
                 }
 
@@ -301,8 +303,9 @@ async fn process_bag_command(
         None
     };
 
-    // Setup message handlers
+    // Setup message handlers - collect messages instead of printing immediately
     let mut handlers = Vec::new();
+    let all_messages = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
     for msg_type in &messages {
         let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
@@ -310,17 +313,16 @@ async fn process_bag_command(
         info!("Registered handler for {} messages", msg_type);
 
         let msg_type_clone = msg_type.clone();
+        let messages_ref = all_messages.clone();
         let handler = tokio::spawn(async move {
             let mut message_count = 0;
             while let Some(msg) = receiver.recv().await {
                 message_count += 1;
-
-                // Print message info in markdown format
-                println!(
-                    "## 📨 {} #{} `{}`",
-                    msg_type_clone, message_count, msg.topic
-                );
-                println!("{}", format_value_as_markdown(&msg.data, 0));
+                let mut messages = messages_ref.lock().await;
+                messages.push((
+                    format!("📨 {} #{} `{}`", msg_type_clone, message_count, msg.topic),
+                    msg,
+                ));
             }
             info!(
                 "Processed {} {} messages total",
@@ -331,24 +333,23 @@ async fn process_bag_command(
         handlers.push(handler);
     }
 
-    // Setup topic handlers
+    // Setup topic handlers - collect messages instead of printing immediately
     for topic in &topics {
         let (sender, mut receiver) = mpsc::channel::<MessageLog>(1000);
         processor.register_topic(topic, sender)?;
         info!("Registered handler for {} topic", topic);
 
         let topic_clone = topic.clone();
+        let messages_ref = all_messages.clone();
         let handler = tokio::spawn(async move {
             let mut message_count = 0;
             while let Some(msg) = receiver.recv().await {
                 message_count += 1;
-
-                // Print message info in markdown format
-                println!(
-                    "## 🔗 {} #{} `{}`",
-                    msg.msg_path, message_count, topic_clone
-                );
-                println!("{}", format_value_as_markdown(&msg.data, 0));
+                let mut messages = messages_ref.lock().await;
+                messages.push((
+                    format!("🔗 {} #{} `{}`", msg.msg_path, message_count, topic_clone),
+                    msg,
+                ));
             }
             info!(
                 "Processed {} messages from {} topic total",
@@ -357,17 +358,6 @@ async fn process_bag_command(
         });
 
         handlers.push(handler);
-    }
-
-    // Show pagination info upfront if we have pagination parameters (before processing starts)
-    if needs_pagination {
-        let offset_val = offset.unwrap_or(0);
-        let limit_val = limit.unwrap_or(1);
-        println!("## 📄 Pagination");
-        println!("- **Offset**: {}", offset_val);
-        println!("- **Limit**: {}", limit_val);
-        println!("- **Status**: 🔄 Processing...");
-        println!();
     }
 
     // Process the bag file
@@ -385,15 +375,22 @@ async fn process_bag_command(
         let _ = handler.await;
     }
 
-    // Show final pagination info if available
+    // Show pagination info once at the top with actual results (before message content)
     if needs_pagination {
         if let Some(pagination) = &pagination_info {
-            println!("## ✅ Final Pagination");
-            println!("- **Offset**: {}", pagination.offset);
-            println!("- **Limit**: {}", pagination.limit);
-            println!("- **Returned**: {}", pagination.returned_count);
-            println!("- **Total**: {}", pagination.total);
+            println!(
+                "Pagination: Offset: {} | Limit: {} | Returned: {} | Total: {}",
+                pagination.offset, pagination.limit, pagination.returned_count, pagination.total
+            );
+            println!();
         }
+    }
+
+    // Now print all collected messages
+    let messages = all_messages.lock().await;
+    for (header, msg) in messages.iter() {
+        println!("## {}", header);
+        println!("{}", format_value_as_markdown(&msg.data, 0));
     }
 
     process_result.map(|_| ())

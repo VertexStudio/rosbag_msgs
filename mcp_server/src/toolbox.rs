@@ -379,9 +379,8 @@ impl Toolbox {
 
                 // Add pagination information at the beginning if available
                 if let Some(pagination) = pagination_info {
-                    result_text.push_str("## 📄 Pagination\n");
                     result_text.push_str(&format!(
-                        "- **Offset**: {}\n- **Limit**: {}\n- **Returned**: {}\n- **Total**: {}\n\n",
+                        "Pagination: Offset: {} | Limit: {} | Returned: {} | Total: {}\n\n",
                         pagination.offset,
                         pagination.limit,
                         pagination.returned_count,
@@ -484,14 +483,14 @@ impl Toolbox {
                             // Add pagination information as text content at the beginning
                             let pagination_text = if let Some(ref pagination) = pagination_info {
                                 format!(
-                                    "## 📄 Pagination\n- **Offset**: {}\n- **Limit**: {}\n- **Returned**: {}\n- **Total**: {}",
+                                    "Pagination: Offset: {} | Limit: {} | Returned: {} | Total: {}",
                                     pagination.offset,
                                     pagination.limit,
                                     pagination.returned_count,
                                     pagination.total
                                 )
                             } else {
-                                "## ⚠️ No pagination information available".to_string()
+                                "No pagination information available".to_string()
                             };
                             contents.push(Content::text(pagination_text));
 
