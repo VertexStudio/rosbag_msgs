@@ -125,7 +125,7 @@ struct Args {
     #[clap(subcommand)]
     command: Option<Commands>,
 
-    /// Path to the ROS bag file (for default process_bag mode)
+    /// Path to the ROS bag file (for default messages mode)
     #[clap(short, long, value_parser)]
     bag: Option<PathBuf>,
 
@@ -158,8 +158,8 @@ enum Commands {
         #[clap(long, action)]
         definitions: bool,
     },
-    /// Process ROS bag file and extract data with filtering and pagination
-    ProcessBag {
+    /// Extract messages from ROS bag file with filtering and pagination
+    Messages {
         /// Path to the ROS bag file
         #[clap(short, long)]
         bag: PathBuf,
@@ -180,8 +180,8 @@ enum Commands {
         #[clap(long)]
         limit: Option<usize>,
     },
-    /// Extract image from bag file and save as PNG
-    FetchImage {
+    /// Extract images from bag file and save as PNG
+    Images {
         /// Path to the ROS bag file
         #[clap(short, long)]
         bag: PathBuf,
@@ -415,7 +415,7 @@ async fn main() -> Result<()> {
             Commands::Info { bag, definitions } => {
                 return info_command(bag, definitions).await;
             }
-            Commands::ProcessBag {
+            Commands::Messages {
                 bag,
                 messages,
                 topics,
@@ -424,7 +424,7 @@ async fn main() -> Result<()> {
             } => {
                 return process_bag_command(bag, messages, topics, offset, limit).await;
             }
-            Commands::FetchImage {
+            Commands::Images {
                 bag,
                 topic,
                 offset,
@@ -436,7 +436,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Default behavior: process bag using top-level arguments
+    // Default behavior: extract messages using top-level arguments
     let bag_path = args.bag.ok_or_else(|| {
         rosbag_msgs::RosbagError::MessageParsingError(
             "Bag file path is required. Use --bag <path> or a subcommand.".to_string(),

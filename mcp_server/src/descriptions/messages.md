@@ -1,14 +1,8 @@
-Parse and extract data from ROS bag files (.bag format) using parameter combinations for metadata inspection, message filtering, and pagination.
+# Messages Tool
+
+Extract message data from ROS bag files with filtering and pagination capabilities.
 
 ## Parameter Usage Patterns
-
-### Discovery: `metadata=true` only
-Start with metadata-only analysis to understand bag contents:
-- Returns topic list with message types (e.g., `/camera/imu` → `sensor_msgs/Imu`)
-- Shows message structure trees with field types and relationships
-- Provides message counts by type and topic
-- Fast scanning without parsing message content
-- Essential first step before filtering
 
 ### Message Type Extraction: `messages` parameter
 Extract specific sensor data by message type:
@@ -26,7 +20,6 @@ Focus on specific data streams:
 - `topics=["/scan"]` → Laser scan data
 - Multiple topics: `topics=["/camera/imu", "/odom"]`
 
-
 ### Pagination: `offset` and `limit` parameters
 For processing large datasets in chunks:
 - `offset=0, limit=10` → First 10 messages (page 1)
@@ -39,15 +32,9 @@ For processing large datasets in chunks:
 Responses exceeding 20,000 characters are automatically stored to temporary files:
 - Returns truncated preview with file path for full results
 - Use file reading tools to access complete output
-- Applies to both message data and metadata responses
+- Applies to message data responses
 
 ## Effective Parameter Combinations
-
-### Initial Exploration
-```
-bag="data/recording.bag", metadata=true
-```
-Returns: Topic structure, message types, counts, bag duration
 
 ### Sensor Data Analysis
 ```
@@ -63,9 +50,9 @@ Returns: 10 messages of IMU and odometry data
 
 ### Topic-specific Investigation
 ```
-bag="data/recording.bag", topics=["/camera/imu"], metadata=true
+bag="data/recording.bag", topics=["/camera/imu"], limit=5
 ```
-Returns: Metadata + first message (default) from specific topic
+Returns: First 5 messages from specific topic
 
 ### Specific Data Range
 ```
@@ -79,27 +66,15 @@ bag="data/recording.bag", messages=["sensor_msgs/Image"], limit=5
 ```
 Returns: 5 sample images without overwhelming output
 
-### Pagination Example
-```
-bag="data/recording.bag", topics=["/camera/image_raw"], offset=0, limit=10
-```
-Returns: First 10 images from camera topic
-
-```
-bag="data/recording.bag", topics=["/camera/image_raw"], offset=10, limit=10  
-```
-Returns: Next 10 images (messages 11-20)
-
 ## Common Workflows
 
-1. **Discovery**: Start with `metadata=true` to see available topics and types
+1. **Discovery**: Use the `bag_info` tool first to see available topics and types
 2. **Selection**: Use discovered types/topics with `messages` or `topics` parameters
 3. **Sampling**: Add `limit` to control output size (defaults to 1 message)
 4. **Pagination**: Use `offset`/`limit` for systematic processing of large datasets
-5. **Validation**: Combine `metadata=true` with filters to verify selection
 
 ## Output Format
-All data returned as JSON with message timestamps, topic names, and parsed message content. Metadata includes ASCII tree structures showing message field hierarchies and data types.
+All data returned as JSON with message timestamps, topic names, and parsed message content.
 
 ### Pagination Information
 When using offset/limit parameters, responses include pagination metadata:

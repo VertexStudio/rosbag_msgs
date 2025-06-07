@@ -1,3 +1,5 @@
+# Images Tool
+
 Extract and return image data from ROS bag files as base64-encoded images for visual analysis and inspection.
 
 ## Purpose

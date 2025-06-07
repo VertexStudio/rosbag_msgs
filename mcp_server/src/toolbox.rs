@@ -25,7 +25,7 @@ pub struct BagInfoRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ProcessRosbagRequest {
+pub struct MessagesRequest {
     /// Absolute or relative path to the ROS bag file (.bag extension)
     #[schemars(
         description = "File path to the ROS bag file to process (e.g., 'data/race_1.bag', '/path/to/recording.bag')"
@@ -58,7 +58,7 @@ pub struct ProcessRosbagRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct FetchImageRequest {
+pub struct ImagesRequest {
     /// Absolute or relative path to the ROS bag file (.bag extension)
     #[schemars(
         description = "File path to the ROS bag file containing image data (e.g., 'data/race_1.bag', '/path/to/recording.bag')"
@@ -273,16 +273,16 @@ impl Toolbox {
         }
     }
 
-    #[tool(description = include_str!("descriptions/process_rosbag.md"))]
-    async fn process_rosbag(
+    #[tool(description = include_str!("descriptions/messages.md"))]
+    async fn messages(
         &self,
-        #[tool(aggr)] ProcessRosbagRequest {
+        #[tool(aggr)] MessagesRequest {
             bag,
             messages,
             topics,
             offset,
             limit,
-        }: ProcessRosbagRequest,
+        }: MessagesRequest,
     ) -> Result<CallToolResult, McpError> {
         use rosbag_msgs::{BagProcessor, MessageLog};
         use tokio::sync::mpsc;
@@ -404,15 +404,15 @@ impl Toolbox {
         }
     }
 
-    #[tool(description = include_str!("descriptions/fetch_image.md"))]
-    async fn fetch_image(
+    #[tool(description = include_str!("descriptions/images.md"))]
+    async fn images(
         &self,
-        #[tool(aggr)] FetchImageRequest {
+        #[tool(aggr)] ImagesRequest {
             bag,
             topic,
             offset,
             image_path,
-        }: FetchImageRequest,
+        }: ImagesRequest,
     ) -> Result<CallToolResult, McpError> {
         use rosbag_msgs::{BagProcessor, MessageLog};
         use tokio::sync::mpsc;
@@ -667,7 +667,7 @@ impl ServerHandler for Toolbox {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides tools for processing and analyzing ROS bag files. Use process_rosbag to extract data, metadata, and perform temporal analysis on recorded ROS data.".to_string()),
+            instructions: Some("This server provides tools for processing and analyzing ROS bag files. Use bag_info to inspect contents and messages to extract data.".to_string()),
         }
     }
 
@@ -890,27 +890,6 @@ The bag file will be processed automatically to extract real data."#;
                     ]),
                 ),
                 Prompt::new(
-                    "temporal_analysis",
-                    Some("Generate a command for time-windowed analysis of bag data"),
-                    Some(vec![
-                        PromptArgument {
-                            name: "bag_path".to_string(),
-                            description: Some("Path to the ROS bag file".to_string()),
-                            required: Some(true),
-                        },
-                        PromptArgument {
-                            name: "start_time".to_string(),
-                            description: Some("Start time in seconds (optional)".to_string()),
-                            required: Some(false),
-                        },
-                        PromptArgument {
-                            name: "duration".to_string(),
-                            description: Some("Duration in seconds (optional)".to_string()),
-                            required: Some(false),
-                        },
-                    ]),
-                ),
-                Prompt::new(
                     "topic_filtering",
                     Some("Generate a command to filter and process specific topics"),
                     Some(vec![
@@ -1029,43 +1008,6 @@ The bag file will be processed automatically to extract real data."#;
 
                 Ok(GetPromptResult {
                     description: Some(format!("Command to extract {sensor_type} sensor data")),
-                    messages: vec![PromptMessage {
-                        role: PromptMessageRole::User,
-                        content: PromptMessageContent::text(prompt),
-                    }],
-                })
-            }
-            "temporal_analysis" => {
-                let bag_path = arguments
-                    .as_ref()
-                    .and_then(|json| json.get("bag_path")?.as_str().map(|s| s.to_string()))
-                    .ok_or_else(|| {
-                        McpError::invalid_params("No bag_path provided to temporal_analysis", None)
-                    })?;
-                let start_time = arguments
-                    .as_ref()
-                    .and_then(|json| json.get("start_time")?.as_f64());
-                let duration = arguments
-                    .as_ref()
-                    .and_then(|json| json.get("duration")?.as_f64());
-
-                let time_params = match (start_time, duration) {
-                    (Some(start), Some(dur)) => format!("start={start}, duration={dur}"),
-                    (Some(start), None) => format!("start={start}"),
-                    (None, Some(dur)) => format!("duration={dur}"),
-                    (None, None) => "start=10.0, duration=5.0".to_string(),
-                };
-
-                let prompt = format!(
-                    "Use the process_rosbag tool to perform temporal analysis on '{bag_path}'.\n\
-                    Call the tool with {time_params} to analyze a specific time window.\n\
-                    Add metadata=true to see how temporal filtering affects message counts.\n\
-                    You can also specify topics or messages to filter the analysis to specific data streams.\n\n\
-                    Example: Extract IMU data from seconds 10-15 of the recording."
-                );
-
-                Ok(GetPromptResult {
-                    description: Some("Command for time-windowed analysis of bag data".to_string()),
                     messages: vec![PromptMessage {
                         role: PromptMessageRole::User,
                         content: PromptMessageContent::text(prompt),

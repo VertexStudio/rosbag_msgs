@@ -6,7 +6,7 @@ A Rust library, CLI tool, and MCP server for processing and parsing ROS bag (`.b
 
 - Bag file parsing with message definitions and dependency resolution
 - Filtering by message types, topics, or both
-- Metadata inspection with ASCII tree visualization
+- Bag info inspection with statistics and structure visualization
 - Selective processing for performance optimization
 - Type-safe value extraction with `FromValue` and `ValueExt` traits
 - Async support via Tokio for concurrent message handling
@@ -28,20 +28,23 @@ cargo build --release
 cargo run -- --help
 
 # Basic usage examples
-cargo run -- --bag data/race_1.bag --metadata
-cargo run -- --bag data/race_1.bag --messages "sensor_msgs/Imu"
-cargo run -- --bag data/race_1.bag --topics "/camera/imu"
-cargo run -- --bag data/race_1.bag --topics "/camera/imu" --max 5
-cargo run -- --bag data/race_1.bag --topics "/camera/imu" --start 10 --duration 5
+cargo run -- info --bag data/race_1.bag
+cargo run -- messages --bag data/race_1.bag --messages "sensor_msgs/Imu"
+cargo run -- messages --bag data/race_1.bag --topics "/camera/imu"
+cargo run -- messages --bag data/race_1.bag --topics "/camera/imu" --limit 5
+cargo run -- images --bag data/race_1.bag --topic "/camera/fisheye2/image_raw"
 ```
 
-### Metadata Inspection
+### Bag Info Inspection
 
 Show bag file structure and message counts:
 
 ```bash
-# Show all connections with message structure trees
-cargo run -- --bag data/race_1.bag --metadata
+# Show basic bag info with statistics and topics
+cargo run -- info --bag data/race_1.bag
+
+# Show detailed info with message definitions
+cargo run -- info --bag data/race_1.bag --definitions
 ```
 
 Output format:
