@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 pub use image_utils::extract_image_from_message;
 pub use ros_message::{MessagePath, Value};
-pub use value::{FromValue, ValueExt};
+pub use value::{FromValue, ValueExt, format_value_as_markdown};
 
 mod image_utils;
 mod value;

@@ -3,7 +3,10 @@ use log::info;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-use rosbag_msgs::{BagProcessor, MessageLog, MetadataEvent, Result, extract_image_from_message};
+use rosbag_msgs::{
+    BagProcessor, MessageLog, MetadataEvent, Result, extract_image_from_message,
+    format_value_as_markdown,
+};
 
 async fn fetch_image_command(
     bag: PathBuf,
@@ -88,12 +91,12 @@ async fn fetch_image_command(
 
                 // Show pagination information first
                 if let Some(ref pagination) = pagination_info {
-                    println!("Pagination:");
-                    println!("  Offset: {}", pagination.offset);
-                    println!("  Limit: {}", pagination.limit);
-                    println!("  Returned: {}", pagination.returned_count);
-                    println!("  Total: {}", pagination.total);
-                    println!(); // Empty line separator
+                    println!("## 📄 Pagination");
+                    println!("- **Offset**: {}", pagination.offset);
+                    println!("- **Limit**: {}", pagination.limit);
+                    println!("- **Returned**: {}", pagination.returned_count);
+                    println!("- **Total**: {}", pagination.total);
+                    println!();
                 }
 
                 std::fs::write(&output_path, &png_data)?;
@@ -259,15 +262,12 @@ async fn process_bag_command(
             while let Some(msg) = receiver.recv().await {
                 message_count += 1;
 
-                // Print message info directly
+                // Print message info in markdown format
                 println!(
-                    "{} #{} [{}]: {}",
-                    msg_type_clone,
-                    message_count,
-                    msg.topic,
-                    serde_json::to_string(&msg.data)
-                        .unwrap_or_else(|_| "<parse error>".to_string())
+                    "## 📨 {} #{} `{}`",
+                    msg_type_clone, message_count, msg.topic
                 );
+                println!("{}", format_value_as_markdown(&msg.data, 0));
             }
             info!(
                 "Processed {} {} messages total",
@@ -290,15 +290,12 @@ async fn process_bag_command(
             while let Some(msg) = receiver.recv().await {
                 message_count += 1;
 
-                // Print message info directly
+                // Print message info in markdown format
                 println!(
-                    "{} #{} [{}]: {}",
-                    msg.msg_path,
-                    message_count,
-                    topic_clone,
-                    serde_json::to_string(&msg.data)
-                        .unwrap_or_else(|_| "<parse error>".to_string())
+                    "## 🔗 {} #{} `{}`",
+                    msg.msg_path, message_count, topic_clone
                 );
+                println!("{}", format_value_as_markdown(&msg.data, 0));
             }
             info!(
                 "Processed {} messages from {} topic total",
@@ -313,11 +310,11 @@ async fn process_bag_command(
     if !metadata && needs_pagination {
         let offset_val = offset.unwrap_or(0);
         let limit_val = limit.unwrap_or(1);
-        println!("Pagination:");
-        println!("  Offset: {}", offset_val);
-        println!("  Limit: {}", limit_val);
-        println!("  Processing...");
-        println!(); // Empty line separator
+        println!("## 📄 Pagination");
+        println!("- **Offset**: {}", offset_val);
+        println!("- **Limit**: {}", limit_val);
+        println!("- **Status**: 🔄 Processing...");
+        println!();
     }
 
     // Process the bag file
@@ -338,11 +335,11 @@ async fn process_bag_command(
     // Show final pagination info if available and not showing metadata
     if !metadata && needs_pagination {
         if let Some(pagination) = &pagination_info {
-            println!("Final Pagination:");
-            println!("  Offset: {}", pagination.offset);
-            println!("  Limit: {}", pagination.limit);
-            println!("  Returned: {}", pagination.returned_count);
-            println!("  Total: {}", pagination.total);
+            println!("## ✅ Final Pagination");
+            println!("- **Offset**: {}", pagination.offset);
+            println!("- **Limit**: {}", pagination.limit);
+            println!("- **Returned**: {}", pagination.returned_count);
+            println!("- **Total**: {}", pagination.total);
         }
     }
 

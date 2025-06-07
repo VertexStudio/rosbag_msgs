@@ -273,13 +273,10 @@ impl Toolbox {
                         message_count += 1;
                         let mut lines = output_lines_ref.lock().await;
                         lines.push(format!(
-                            "{} #{} [{}]: {}",
-                            msg_type_clone,
-                            message_count,
-                            msg.topic,
-                            serde_json::to_string(&msg.data)
-                                .unwrap_or_else(|_| "<parse error>".to_string())
+                            "## 📨 {} #{} `{}`",
+                            msg_type_clone, message_count, msg.topic
                         ));
+                        lines.push(rosbag_msgs::format_value_as_markdown(&msg.data, 0));
                     }
                 });
 
@@ -308,13 +305,10 @@ impl Toolbox {
                         message_count += 1;
                         let mut lines = output_lines_ref.lock().await;
                         lines.push(format!(
-                            "{} #{} [{}]: {}",
-                            msg.msg_path,
-                            message_count,
-                            topic_clone,
-                            serde_json::to_string(&msg.data)
-                                .unwrap_or_else(|_| "<parse error>".to_string())
+                            "## 🔗 {} #{} `{}`",
+                            msg.msg_path, message_count, topic_clone
                         ));
+                        lines.push(rosbag_msgs::format_value_as_markdown(&msg.data, 0));
                     }
                 });
 
@@ -352,9 +346,9 @@ impl Toolbox {
 
                 // Add pagination information at the beginning if available
                 if let Some(pagination) = pagination_info {
-                    result_text.push_str("--- Pagination Info ---\n");
+                    result_text.push_str("## 📄 Pagination\n");
                     result_text.push_str(&format!(
-                        "Offset: {} | Limit: {} | Returned: {} | Total: {}\n\n",
+                        "- **Offset**: {}\n- **Limit**: {}\n- **Returned**: {}\n- **Total**: {}\n\n",
                         pagination.offset,
                         pagination.limit,
                         pagination.returned_count,
@@ -457,14 +451,14 @@ impl Toolbox {
                             // Add pagination information as text content at the beginning
                             let pagination_text = if let Some(ref pagination) = pagination_info {
                                 format!(
-                                    "Pagination: Offset: {} | Limit: {} | Returned: {} | Total: {}",
+                                    "## 📄 Pagination\n- **Offset**: {}\n- **Limit**: {}\n- **Returned**: {}\n- **Total**: {}",
                                     pagination.offset,
                                     pagination.limit,
                                     pagination.returned_count,
                                     pagination.total
                                 )
                             } else {
-                                "No pagination information available".to_string()
+                                "## ⚠️ No pagination information available".to_string()
                             };
                             contents.push(Content::text(pagination_text));
 

@@ -1,6 +1,57 @@
 use crate::{Result, RosbagError, Value};
 use std::collections::HashMap;
 
+/// Format a Value as readable markdown
+pub fn format_value_as_markdown(value: &Value, indent: usize) -> String {
+    let prefix = "  ".repeat(indent);
+
+    match value {
+        Value::Bool(b) => format!("**{}**", if *b { "✓" } else { "✗" }),
+        Value::I8(n) => n.to_string(),
+        Value::I16(n) => n.to_string(),
+        Value::I32(n) => n.to_string(),
+        Value::I64(n) => n.to_string(),
+        Value::U8(n) => n.to_string(),
+        Value::U16(n) => n.to_string(),
+        Value::U32(n) => n.to_string(),
+        Value::U64(n) => n.to_string(),
+        Value::F32(n) => format!("{:.3}", n),
+        Value::F64(n) => format!("{:.3}", n),
+        Value::String(s) => format!("\"{}\"", s),
+        Value::Time(t) => format!("⏰ {}.{:09}s", t.sec, t.nsec),
+        Value::Duration(d) => format!("⏱️ {}.{:09}s", d.sec, d.nsec),
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                "[]".to_string()
+            } else if arr.len() <= 3 {
+                // Short arrays on one line
+                let items: Vec<String> =
+                    arr.iter().map(|v| format_value_as_markdown(v, 0)).collect();
+                format!("[{}]", items.join(", "))
+            } else {
+                // Long arrays as list
+                format!("📊 [{} items]", arr.len())
+            }
+        }
+        Value::Message(map) => {
+            if map.is_empty() {
+                "{}".to_string()
+            } else {
+                let mut result = String::new();
+                for (key, val) in map {
+                    result.push_str(&format!(
+                        "\n{}- **{}**: {}",
+                        prefix,
+                        key,
+                        format_value_as_markdown(val, indent + 1)
+                    ));
+                }
+                result
+            }
+        }
+    }
+}
+
 /// Trait for types that can be extracted from a Value
 pub trait FromValue: Sized {
     /// Extract the value from a Value
