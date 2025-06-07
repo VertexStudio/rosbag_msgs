@@ -326,7 +326,7 @@ impl Toolbox {
         let process_result = processor
             .process_bag(metadata_sender, offset, limit, None, None)
             .await;
-            
+
         let pagination_info = match &process_result {
             Ok(pagination) => pagination.clone(),
             Err(_) => None,
@@ -348,17 +348,25 @@ impl Toolbox {
 
         match process_result {
             Ok(_) => {
-                let mut result_text = if output_lines.is_empty() {
-                    "Bag file processed successfully (no output generated)".to_string()
-                } else {
-                    output_lines.join("\n")
-                };
+                let mut result_text = String::new();
 
-                // Add pagination information if available
+                // Add pagination information at the beginning if available
                 if let Some(pagination) = pagination_info {
-                    result_text.push_str("\n\n--- Pagination Info ---\n");
-                    result_text.push_str(&format!("Offset: {} | Limit: {} | Returned: {} | Total: {}\n", 
-                        pagination.offset, pagination.limit, pagination.returned_count, pagination.total));
+                    result_text.push_str("--- Pagination Info ---\n");
+                    result_text.push_str(&format!(
+                        "Offset: {} | Limit: {} | Returned: {} | Total: {}\n\n",
+                        pagination.offset,
+                        pagination.limit,
+                        pagination.returned_count,
+                        pagination.total
+                    ));
+                }
+
+                // Add main content
+                if output_lines.is_empty() {
+                    result_text.push_str("Bag file processed successfully (no output generated)");
+                } else {
+                    result_text.push_str(&output_lines.join("\n"));
                 }
 
                 // Use the large output handler to potentially store to file
@@ -409,7 +417,7 @@ impl Toolbox {
         // Default to getting just 1 image at the specified offset
         let limit = Some(1);
         let process_result = processor.process_bag(None, offset, limit, None, None).await;
-        
+
         let pagination_info = match &process_result {
             Ok(pagination) => pagination.clone(),
             Err(_) => None,
@@ -443,19 +451,25 @@ impl Toolbox {
                                 &png_data,
                             );
 
-                            // Prepare content with image and pagination info
-                            let mut contents = vec![Content::image(base64_data, "image/png")];
-                            
-                            // Add pagination information as text content
+                            // Prepare content with pagination info first, then image
+                            let mut contents = vec![];
+
+                            // Add pagination information as text content at the beginning
                             let pagination_text = if let Some(ref pagination) = pagination_info {
                                 format!(
                                     "Pagination: Offset: {} | Limit: {} | Returned: {} | Total: {}",
-                                    pagination.offset, pagination.limit, pagination.returned_count, pagination.total
+                                    pagination.offset,
+                                    pagination.limit,
+                                    pagination.returned_count,
+                                    pagination.total
                                 )
                             } else {
                                 "No pagination information available".to_string()
                             };
                             contents.push(Content::text(pagination_text));
+
+                            // Add the image content
+                            contents.push(Content::image(base64_data, "image/png"));
 
                             Ok(CallToolResult::success(contents))
                         }

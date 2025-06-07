@@ -507,14 +507,18 @@ impl BagProcessor {
                                     };
 
                                     // Check if this message should be sent to handlers (within offset/limit window)
-                                    let should_send = global_message_count >= offset_val && global_message_count < offset_val + limit_val;
+                                    let should_send = global_message_count >= offset_val
+                                        && global_message_count < offset_val + limit_val;
 
                                     if should_send {
                                         // Send to message type handler if registered
                                         if let Some(sender) = message_sender {
                                             trace!("--> {} (by type)", msg_path);
                                             if let Err(e) = sender.send(message_log.clone()).await {
-                                                warn!("Error sending message to type handler: {}", e);
+                                                warn!(
+                                                    "Error sending message to type handler: {}",
+                                                    e
+                                                );
                                                 break 'chunk_loop;
                                             }
                                         }
@@ -523,7 +527,10 @@ impl BagProcessor {
                                         if let Some(sender) = topic_sender {
                                             trace!("--> {} (by topic)", connection.topic);
                                             if let Err(e) = sender.send(message_log).await {
-                                                warn!("Error sending message to topic handler: {}", e);
+                                                warn!(
+                                                    "Error sending message to topic handler: {}",
+                                                    e
+                                                );
                                                 break 'chunk_loop;
                                             }
                                         }
@@ -573,7 +580,7 @@ impl BagProcessor {
             } else {
                 (total - offset_val).min(limit_val)
             };
-            
+
             Some(PaginationInfo {
                 offset: offset_val,
                 limit: limit_val,
@@ -588,7 +595,7 @@ impl BagProcessor {
         if let Some(ref sender) = metadata_sender {
             let processing_duration_ms =
                 processing_start_time.map(|start| start.elapsed().as_millis() as u64);
-            
+
             let stats = ProcessingStats {
                 total_messages,
                 total_processed: if skip_parsing {

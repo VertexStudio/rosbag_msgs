@@ -59,10 +59,12 @@ async fn main() -> Result<()> {
     let process_result = processor
         .process_bag(Some(metadata_sender), Some(0), Some(10), None, None)
         .await;
-        
+
     if let Ok(Some(pagination)) = &process_result {
-        println!("Example pagination: offset={}, limit={}, returned={}, total={}", 
-                 pagination.offset, pagination.limit, pagination.returned_count, pagination.total);
+        println!(
+            "Example pagination: offset={}, limit={}, returned={}, total={}",
+            pagination.offset, pagination.limit, pagination.returned_count, pagination.total
+        );
     }
 
     // Channels should be closed automatically when process_bag completes

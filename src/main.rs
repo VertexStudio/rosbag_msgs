@@ -36,7 +36,7 @@ async fn fetch_image_command(
 
     // Setup metadata channel (not needed for pagination anymore, but kept for consistency)
     let (metadata_sender, mut metadata_receiver) = mpsc::channel::<MetadataEvent>(100);
-    
+
     // Spawn task to handle metadata events (just consume them)
     let metadata_handler = tokio::spawn(async move {
         while let Some(_) = metadata_receiver.recv().await {
@@ -86,18 +86,19 @@ async fn fetch_image_command(
                     ))
                 });
 
-                std::fs::write(&output_path, &png_data)?;
-                println!("Image saved to: {}", output_path.display());
-                
-                // Show pagination information
+                // Show pagination information first
                 if let Some(ref pagination) = pagination_info {
-                    println!("\nPagination:");
+                    println!("Pagination:");
                     println!("  Offset: {}", pagination.offset);
                     println!("  Limit: {}", pagination.limit);
                     println!("  Returned: {}", pagination.returned_count);
                     println!("  Total: {}", pagination.total);
+                    println!(); // Empty line separator
                 }
-                
+
+                std::fs::write(&output_path, &png_data)?;
+                println!("Image saved to: {}", output_path.display());
+
                 Ok(())
             }
             Err(e) => Err(rosbag_msgs::RosbagError::MessageParsingError(format!(
@@ -308,11 +309,22 @@ async fn process_bag_command(
         handlers.push(handler);
     }
 
+    // Show pagination info upfront if we have pagination parameters (before processing starts)
+    if !metadata && needs_pagination {
+        let offset_val = offset.unwrap_or(0);
+        let limit_val = limit.unwrap_or(1);
+        println!("Pagination:");
+        println!("  Offset: {}", offset_val);
+        println!("  Limit: {}", limit_val);
+        println!("  Processing...");
+        println!(); // Empty line separator
+    }
+
     // Process the bag file
     let process_result = processor
         .process_bag(metadata_sender, offset, limit, None, None)
         .await;
-    
+
     let pagination_info = match &process_result {
         Ok(pagination) => pagination.clone(),
         Err(_) => None,
@@ -323,10 +335,10 @@ async fn process_bag_command(
         let _ = handler.await;
     }
 
-    // Show pagination info if available and not showing metadata
+    // Show final pagination info if available and not showing metadata
     if !metadata && needs_pagination {
         if let Some(pagination) = &pagination_info {
-            println!("\nPagination:");
+            println!("Final Pagination:");
             println!("  Offset: {}", pagination.offset);
             println!("  Limit: {}", pagination.limit);
             println!("  Returned: {}", pagination.returned_count);
