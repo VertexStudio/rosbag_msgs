@@ -1,22 +1,23 @@
 # Info Tool
 
-Inspects ROS bag file structure and metadata, equivalent to the CLI `info` command and similar to `rosbag info`.
+Analyze ROS bag file structure to understand what data is available for processing.
+
+## What it does
+- Scans bag file to discover all topics and message types
+- Counts total messages by type and topic
+- Reports bag timing information (duration, start/end times)
+- Optionally shows detailed message field structures
 
 ## Parameters
-- **bag**: Path to the ROS bag file (.bag extension)
-- **definitions**: Optional boolean to include detailed message type definitions
+- **bag**: Path to the ROS bag file to analyze
+- **definitions**: Set to true to include detailed message field definitions (default: false)
 
-## Output
-- Basic info: topic names, message types, counts, and timing statistics
-- With definitions=true: Complete message type definitions and field structures
+## When to use
+- First step when working with an unknown bag file
+- To understand what sensors/data streams are available
+- To get message counts before setting up filtering or pagination
+- To see message structure before extracting specific data
 
-## Usage Examples
-```
-# Basic bag info (topic summary)
-info(bag="data/race_1.bag")
-
-# Detailed info with message definitions
-info(bag="data/race_1.bag", definitions=true)
-```
-
-This tool provides an overview of bag contents without processing actual message data, making it ideal for quick inspection and understanding of recorded data structure.
+## Examples
+- Basic overview: Use just the bag path to get topic names, message types, and counts
+- Detailed analysis: Add definitions=true to see complete message field structures for data extraction planning

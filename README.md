@@ -440,12 +440,12 @@ cargo run -p rosbag_mcp_server -- toolbox
 ### MCP Features
 
 #### Tools: `info`, `messages`, `images`
-Three main tools matching CLI functionality:
-- **`info`**: Bag structure inspection with optional message definitions
-- **`messages`**: Message extraction with filtering and pagination 
-- **`images`**: Image extraction and base64 encoding for AI analysis
-- **Parameter-based filtering**: Same filtering options as CLI (`messages`, `topics`, `offset`, `limit`)
-- **JSON output**: Structured data for downstream processing
+Three specialized tools for ROS bag analysis:
+- **`info`**: Analyze bag structure to understand available data (topics, message types, counts)
+- **`messages`**: Extract message content with filtering by type/topic and pagination
+- **`images`**: Extract image data as base64-encoded PNG for visual analysis
+- **Flexible filtering**: Filter by message types or topic names with pagination support
+- **Structured output**: All data returned as JSON for easy processing
 
 #### Dynamic Resources
 Access bag file metadata through resource URIs:
@@ -470,68 +470,19 @@ Context-aware prompts for common workflows:
 ### Usage Examples
 
 #### Basic Discovery
-```json
-{
-  "tool": "info",
-  "parameters": {
-    "bag": "data/race_1.bag"
-  }
-}
-```
-Returns: Topic structure, message types, counts, bag duration
+Use the `info` tool with just a bag path to understand what data is available.
 
-#### Sensor Data Extraction
-```json
-{
-  "tool": "messages", 
-  "parameters": {
-    "bag": "data/race_1.bag",
-    "messages": ["sensor_msgs/Imu"],
-    "limit": 50
-  }
-}
-```
-Returns: 50 IMU readings with orientation, angular velocity, acceleration
+#### Sensor Data Extraction  
+Use the `messages` tool with specific message types (e.g., sensor_msgs/Imu) to extract sensor data with pagination support.
 
-#### Multi-sensor Fusion Analysis
-```json
-{
-  "tool": "messages",
-  "parameters": {
-    "bag": "data/race_1.bag", 
-    "messages": ["sensor_msgs/Imu", "nav_msgs/Odometry"],
-    "offset": 100,
-    "limit": 10
-  }
-}
-```
-Returns: 10 IMU and odometry messages starting from offset 100
+#### Multi-sensor Analysis
+Combine multiple message types (IMU + odometry) with the `messages` tool for sensor fusion analysis.
 
 #### Topic-Based Analysis
-```json
-{
-  "tool": "messages",
-  "parameters": {
-    "bag": "data/race_1.bag",
-    "topics": ["/cmd_vel", "/odom"], 
-    "limit": 20
-  }
-}
-```
-Returns: First 20 messages from command and odometry topics
+Filter by specific topic names (e.g., /cmd_vel, /odom) when you need data from particular sensors.
 
 #### Image Extraction
-```json
-{
-  "tool": "images",
-  "parameters": {
-    "bag": "data/race_1.bag",
-    "topic": "/camera/fisheye2/image_raw",
-    "offset": 10
-  }
-}
-```
-Returns: 11th image from camera topic as base64 PNG
+Use the `images` tool to extract visual data as base64 PNG images for analysis.
 
 ### Integration
 
